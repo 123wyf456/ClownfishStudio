@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "candidate_id": "podcast-1",
+      "content_type": "podcast",
+      "title": "Five Minutes of Urban Nature",
+      "creator": "Clownfish Field Notes",
+      "duration_seconds": 320,
+      "playback_url": "mock://audio/podcast-1",
+      "tags": ["city", "calm", "short"],
+      "source": "mock_podcast"
+    },
+    {
+      "candidate_id": "podcast-2",
+      "content_type": "podcast",
+      "title": "Why We Replay Familiar Songs",
+      "creator": "Tiny Music Essays",
+      "duration_seconds": 540,
+      "playback_url": "mock://audio/podcast-2",
+      "tags": ["music", "essay", "nostalgia"],
+      "source": "mock_podcast"
+    }
+  ]
+}

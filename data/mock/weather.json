@@ -1,0 +1,32 @@
+{
+  "default": {
+    "city": "Unknown",
+    "condition": "clear",
+    "temperature_celsius": 22,
+    "humidity": 0.5,
+    "source": "mock"
+  },
+  "cities": {
+    "Shanghai": {
+      "city": "Shanghai",
+      "condition": "cloudy",
+      "temperature_celsius": 19,
+      "humidity": 0.72,
+      "source": "mock"
+    },
+    "Beijing": {
+      "city": "Beijing",
+      "condition": "clear",
+      "temperature_celsius": 16,
+      "humidity": 0.38,
+      "source": "mock"
+    },
+    "Tokyo": {
+      "city": "Tokyo",
+      "condition": "rain",
+      "temperature_celsius": 18,
+      "humidity": 0.81,
+      "source": "mock"
+    }
+  }
+}

@@ -1,0 +1,330 @@
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class StrictSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class Mood(StrEnum):
+    calm = "calm"
+    tired = "tired"
+    focused = "focused"
+    happy = "happy"
+    anxious = "anxious"
+    nostalgic = "nostalgic"
+
+
+class ListeningNeed(StrEnum):
+    relax = "relax"
+    focus = "focus"
+    commute = "commute"
+    workout = "workout"
+    sleep = "sleep"
+    discover = "discover"
+    companionship = "companionship"
+
+
+class ContentType(StrEnum):
+    music = "music"
+    podcast = "podcast"
+
+
+class ProgramItemType(StrEnum):
+    narration = "narration"
+    music = "music"
+    podcast = "podcast"
+
+
+class FeedbackType(StrEnum):
+    like = "like"
+    dislike = "dislike"
+    skip = "skip"
+    too_familiar = "too_familiar"
+    want_more_like_this = "want_more_like_this"
+    less_like_this = "less_like_this"
+
+
+class DeviceContext(StrictSchema):
+    local_time: datetime
+    timezone: str = Field(min_length=1, examples=["Asia/Shanghai"])
+    locale: str | None = Field(default=None, examples=["zh-CN"])
+    city_hint: str | None = Field(default=None, examples=["Shanghai"])
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+
+class CalendarEvent(StrictSchema):
+    event_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    start_at: datetime
+    end_at: datetime | None = None
+    location: str | None = None
+    source: str = Field(min_length=1)
+
+
+class UserStateInput(StrictSchema):
+    mood: Mood | None = None
+    energy_level: int | None = Field(default=None, ge=1, le=5)
+    needs: list[ListeningNeed] = Field(default_factory=list)
+    duration_minutes: int = Field(default=30, ge=5, le=180)
+    free_text: str | None = Field(default=None, max_length=1000)
+
+
+class ContextSnapshot(StrictSchema):
+    device_context: DeviceContext
+    user_state: UserStateInput
+    weather: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    calendar_events: list[CalendarEvent] = Field(default_factory=list)
+    captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class UserMusicMemory(StrictSchema):
+    user_id: str = Field(min_length=1)
+    favorite_genres: list[str] = Field(default_factory=list)
+    favorite_artists: list[str] = Field(default_factory=list)
+    disliked_artists: list[str] = Field(default_factory=list)
+    recent_candidate_ids: list[str] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class CandidateItem(StrictSchema):
+    candidate_id: str = Field(min_length=1)
+    content_type: ContentType
+    title: str = Field(min_length=1)
+    creator: str = Field(min_length=1)
+    duration_seconds: int | None = Field(default=None, ge=1)
+    playback_url: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    source: str = Field(min_length=1)
+    metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+
+
+class ProgramItem(StrictSchema):
+    item_id: str = Field(min_length=1)
+    item_type: ProgramItemType
+    title: str = Field(min_length=1)
+    creator: str | None = None
+    position: int = Field(ge=0)
+    candidate_id: str | None = None
+    playback_url: str | None = None
+    duration_seconds: int | None = Field(default=None, ge=1)
+    narration_text: str | None = Field(default=None, max_length=2000)
+    explanation: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_item_payload(self) -> Self:
+        if self.item_type is ProgramItemType.narration and not self.narration_text:
+            raise ValueError("narration program items require narration_text")
+
+        if (
+            self.item_type in {ProgramItemType.music, ProgramItemType.podcast}
+            and not self.candidate_id
+        ):
+            raise ValueError("music and podcast program items require candidate_id")
+
+        return self
+
+
+class ProgramBlock(StrictSchema):
+    block_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    summary: str | None = Field(default=None, max_length=1000)
+    position: int = Field(ge=0)
+    items: list[ProgramItem] = Field(default_factory=list)
+
+
+class RadioProgram(StrictSchema):
+    program_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1, max_length=2000)
+    context_snapshot: ContextSnapshot
+    blocks: list[ProgramBlock] = Field(min_length=1)
+    total_duration_minutes: int = Field(ge=1, le=240)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class FeedbackEvent(StrictSchema):
+    feedback_type: FeedbackType
+    user_id: str = Field(min_length=1)
+    program_id: str = Field(min_length=1)
+    item_id: str | None = None
+    candidate_id: str | None = None
+    comment: str | None = Field(default=None, max_length=1000)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class FeedbackResponse(StrictSchema):
+    feedback: FeedbackEvent
+    memory_update_hint: dict[str, str]
+
+
+class GenerateProgramRequest(StrictSchema):
+    user_id: str = Field(min_length=1)
+    device_context: DeviceContext
+    user_state: UserStateInput
+    max_candidates: int = Field(default=20, ge=1, le=50)
+
+
+class GenerateProgramResponse(StrictSchema):
+    request_id: str = Field(min_length=1)
+    program: RadioProgram
+    candidate_count: int = Field(ge=0)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class IntegrationStatus(StrictSchema):
+    provider: str = Field(min_length=1)
+    configured: bool
+    mode: str = Field(min_length=1)
+    detail: str = Field(default="")
+
+
+class RuntimeStatus(StrictSchema):
+    app_name: str = Field(min_length=1)
+    brain: IntegrationStatus
+    tts: IntegrationStatus
+    calendar: IntegrationStatus
+    weather: IntegrationStatus
+    music: IntegrationStatus
+
+
+class MusicAccountStatus(StrictSchema):
+    connected: bool
+    anonymous: bool
+    user_id: str | None = None
+    nickname: str | None = None
+    has_profile: bool
+    detail: str = ""
+
+
+class MusicPreferenceStatus(StrictSchema):
+    can_read_profile: bool = False
+    can_read_playlists: bool = False
+    can_read_liked_playlist: bool = False
+    can_read_liked_songs: bool = False
+    can_read_history: bool = False
+    can_read_daily_recommendations: bool = False
+    can_read_personalized_new_songs: bool = False
+    can_read_recommended_playlists: bool = False
+    playlist_count: int = 0
+    liked_playlist_track_count: int = 0
+    history_count: int = 0
+    daily_recommendation_count: int = 0
+    personalized_new_song_count: int = 0
+    recommended_playlist_count: int = 0
+    sample_playlist_names: list[str] = Field(default_factory=list)
+    detail: str = ""
+
+
+class MusicHealthResponse(StrictSchema):
+    provider: str = Field(min_length=1)
+    base_url: str | None = None
+    search_ok: bool
+    playback_ok: bool
+    account: MusicAccountStatus
+    preference_status: MusicPreferenceStatus = Field(default_factory=MusicPreferenceStatus)
+
+
+class DesktopConfigSection(StrictSchema):
+    provider: str
+    configured: bool
+
+
+class DesktopConfigValue(StrictSchema):
+    radio_agent_provider: str
+    radio_agent_model: str
+    openai_api_key: str | None = None
+    openai_base_url: str
+    deepseek_api_key: str | None = None
+    deepseek_base_url: str
+    tts_provider: str
+    fish_audio_api_key: str | None = None
+    fish_audio_base_url: str
+    fish_audio_voice_id: str | None = None
+    calendar_provider: str
+    feishu_app_id: str | None = None
+    feishu_app_secret: str | None = None
+    feishu_calendar_id: str | None = None
+    weather_provider: str
+    openweather_api_key: str | None = None
+    openweather_base_url: str
+    netease_api_base_url: str | None = None
+    netease_cookie: str | None = None
+    netease_playback_level: str
+
+
+class DesktopConfigResponse(StrictSchema):
+    config: DesktopConfigValue
+    runtime: RuntimeStatus
+    sections: dict[str, DesktopConfigSection]
+
+
+class DesktopConfigUpdateRequest(StrictSchema):
+    radio_agent_provider: str
+    radio_agent_model: str
+    openai_api_key: str | None = None
+    openai_base_url: str = Field(default="https://api.openai.com/v1")
+    deepseek_api_key: str | None = None
+    deepseek_base_url: str
+    tts_provider: str
+    fish_audio_api_key: str | None = None
+    fish_audio_base_url: str
+    fish_audio_voice_id: str | None = None
+    calendar_provider: str
+    feishu_app_id: str | None = None
+    feishu_app_secret: str | None = None
+    feishu_calendar_id: str | None = None
+    weather_provider: str
+    openweather_api_key: str | None = None
+    openweather_base_url: str
+    netease_api_base_url: str | None = None
+    netease_cookie: str | None = None
+    netease_playback_level: str = Field(min_length=1)
+
+
+class ChatMessage(StrictSchema):
+    role: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=4000)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class StationSession(StrictSchema):
+    session_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    greeting: str = Field(min_length=1)
+    tts_text: str | None = None
+    tts_audio_url: str | None = None
+    program: RadioProgram
+    weather: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    calendar_events: list[CalendarEvent] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class StationGenerateResponse(StrictSchema):
+    session: StationSession
+    candidate_count: int = Field(ge=0)
+    runtime: RuntimeStatus
+
+
+class StationChatRequest(StrictSchema):
+    user_id: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=4000)
+    device_context: DeviceContext
+
+
+class StationChatResponse(StrictSchema):
+    reply: ChatMessage
+    session: StationSession
+    runtime: RuntimeStatus
+
+
+class PlayerNowResponse(StrictSchema):
+    session: StationSession | None = None
+    current_item: ProgramItem | None = None
+    queue: list[ProgramItem] = Field(default_factory=list)
+    runtime: RuntimeStatus

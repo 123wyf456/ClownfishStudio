@@ -1,0 +1,25 @@
+{
+  "events": [
+    {
+      "event_id": "history-1",
+      "user_id": "demo-user",
+      "candidate_id": "music-2",
+      "event_type": "played",
+      "occurred_at": "2026-04-29T21:10:00Z"
+    },
+    {
+      "event_id": "history-2",
+      "user_id": "demo-user",
+      "candidate_id": "podcast-1",
+      "event_type": "played",
+      "occurred_at": "2026-04-29T21:20:00Z"
+    },
+    {
+      "event_id": "history-3",
+      "user_id": "demo-user",
+      "candidate_id": "music-1",
+      "event_type": "liked",
+      "occurred_at": "2026-04-28T08:00:00Z"
+    }
+  ]
+}

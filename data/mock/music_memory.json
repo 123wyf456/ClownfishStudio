@@ -1,0 +1,12 @@
+{
+  "users": [
+    {
+      "user_id": "demo-user",
+      "favorite_genres": ["indie pop", "lofi", "jazz"],
+      "favorite_artists": ["Lamp", "Nujabes", "Ichiko Aoba"],
+      "disliked_artists": [],
+      "recent_candidate_ids": ["music-2", "podcast-1"],
+      "updated_at": "2026-04-30T10:00:00Z"
+    }
+  ]
+}

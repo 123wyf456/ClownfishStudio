@@ -1,0 +1,44 @@
+{
+  "items": [
+    {
+      "candidate_id": "music-1",
+      "content_type": "music",
+      "title": "Harbor Lights",
+      "creator": "Clownfish Mock Band",
+      "duration_seconds": 205,
+      "playback_url": "mock://audio/music-1",
+      "tags": ["warm", "night", "indie pop"],
+      "source": "mock_music"
+    },
+    {
+      "candidate_id": "music-2",
+      "content_type": "music",
+      "title": "Quiet Sidewalk",
+      "creator": "Studio Aquarium",
+      "duration_seconds": 188,
+      "playback_url": "mock://audio/music-2",
+      "tags": ["lofi", "focus", "calm"],
+      "source": "mock_music"
+    },
+    {
+      "candidate_id": "music-3",
+      "content_type": "music",
+      "title": "Morning Drip",
+      "creator": "Blue Current",
+      "duration_seconds": 172,
+      "playback_url": "mock://audio/music-3",
+      "tags": ["jazz", "morning", "light"],
+      "source": "mock_music"
+    },
+    {
+      "candidate_id": "music-4",
+      "content_type": "music",
+      "title": "Runway Pulse",
+      "creator": "Neon Reef",
+      "duration_seconds": 214,
+      "playback_url": "mock://audio/music-4",
+      "tags": ["workout", "electronic", "energy"],
+      "source": "mock_music"
+    }
+  ]
+}
