@@ -75,7 +75,7 @@ export async function loadConfig(): Promise<ConfigResponse> {
           ? remoteConfig.fish_audio_voice_id
           : "",
     },
-    runtime: isObject(response.runtime) ? (response.runtime as ConfigResponse["runtime"]) : mockRuntime(),
+    runtime: normalizeRuntime(response.runtime),
   };
 }
 
@@ -105,7 +105,7 @@ export async function chatStation(payload: {
 }
 
 function loadConfigFromResponse(response: Record<string, unknown>, fallback: ConfigResponse["config"]): ConfigResponse {
-  const runtime = isObject(response.runtime) ? (response.runtime as ConfigResponse["runtime"]) : mockRuntime();
+  const runtime = normalizeRuntime(response.runtime);
   const remoteConfig = isObject(response.config) ? response.config : {};
   const localConfig = isObject(response.local) ? response.local : {};
 
@@ -180,5 +180,62 @@ function mockRuntime(): ConfigResponse["runtime"] {
     weather: { provider: "openweather", configured: false, mode: "mock" },
     music: { provider: "netease_cloud_music", configured: false, mode: "mock" },
     tts: { provider: "fish_audio", configured: false, mode: "mock" },
+  };
+}
+
+function normalizeRuntime(value: unknown): ConfigResponse["runtime"] {
+  if (!isObject(value)) {
+    return mockRuntime();
+  }
+
+  const runtime = value as Record<string, unknown>;
+  const agentCandidate = isObject(runtime.agent)
+    ? runtime.agent
+    : isObject(runtime.brain)
+      ? runtime.brain
+      : null;
+  const weatherCandidate = isObject(runtime.weather) ? runtime.weather : null;
+  const musicCandidate = isObject(runtime.music) ? runtime.music : null;
+  const ttsCandidate = isObject(runtime.tts) ? runtime.tts : null;
+
+  return {
+    agent: normalizeRuntimeItem(
+      agentCandidate,
+      mockRuntime().agent,
+    ),
+    weather: normalizeRuntimeItem(
+      weatherCandidate,
+      mockRuntime().weather,
+    ),
+    music: normalizeRuntimeItem(
+      musicCandidate,
+      mockRuntime().music,
+    ),
+    tts: normalizeRuntimeItem(
+      ttsCandidate,
+      mockRuntime().tts,
+    ),
+  };
+}
+
+function normalizeRuntimeItem(
+  value: Record<string, unknown> | null,
+  fallback: ConfigResponse["runtime"]["agent"],
+): ConfigResponse["runtime"]["agent"] {
+  if (!value) {
+    return fallback;
+  }
+
+  return {
+    provider:
+      typeof value.provider === "string" && value.provider
+        ? value.provider
+        : fallback.provider,
+    configured:
+      typeof value.configured === "boolean" ? value.configured : fallback.configured,
+    mode:
+      typeof value.mode === "string" && value.mode
+        ? value.mode
+        : fallback.mode,
   };
 }
