@@ -218,6 +218,65 @@ def test_collect_candidates_prioritizes_song_request_plan_matches(monkeypatch) -
     assert candidate_items[0].candidate_id == "netease-exact"
 
 
+def test_collect_candidates_filters_to_requested_artist_when_artist_focus(monkeypatch) -> None:
+    exact_artist = CandidateItem(
+        candidate_id="netease-jj-1",
+        content_type=ContentType.music,
+        title="江南",
+        creator="林俊杰",
+        duration_seconds=230,
+        playback_url="https://example.com/jj.mp3",
+        tags=["search_result", "query_match"],
+        source="netease_cloud_music",
+    )
+    wrong_artist = CandidateItem(
+        candidate_id="netease-other-1",
+        content_type=ContentType.music,
+        title="夜曲",
+        creator="周杰伦",
+        duration_seconds=210,
+        playback_url="https://example.com/other.mp3",
+        tags=["search_result", "query_match"],
+        source="netease_cloud_music",
+    )
+
+    monkeypatch.setattr(
+        "app.services.program_generation.get_netease_preference_candidates",
+        lambda limit=8: [],
+    )
+    monkeypatch.setattr(
+        "app.services.program_generation.get_netease_personalized_candidates",
+        lambda limit=8: [],
+    )
+    monkeypatch.setattr(
+        "app.services.program_generation.search_music_candidates",
+        lambda query=None, tags=None, limit=10: [exact_artist, wrong_artist],
+    )
+    monkeypatch.setattr(
+        "app.services.program_generation.search_podcast_candidates",
+        lambda query=None, tags=None, limit=10: [],
+    )
+
+    service = ProgramGenerationService()
+    service._song_request_planner = _ArtistFocusSongRequestPlanner()
+    request = GenerateProgramRequest(
+        user_id="demo-user",
+        device_context=DeviceContext(
+            local_time=datetime(2026, 4, 30, 22, 30, tzinfo=UTC),
+            timezone="Asia/Shanghai",
+            city_hint="Shanghai",
+        ),
+        user_state=UserStateInput(duration_minutes=25, free_text="推荐林俊杰的歌"),
+        max_candidates=8,
+    )
+
+    candidate_items, warnings = service._collect_candidates(request)
+
+    assert warnings == []
+    assert candidate_items
+    assert all(candidate.creator == "林俊杰" for candidate in candidate_items)
+
+
 class _StubSongRequestPlanner:
     def plan(self, *, message: str, memory, weather) -> SongRequestPlan:  # noqa: ANN001
         del message, memory, weather
@@ -228,6 +287,20 @@ class _StubSongRequestPlanner:
             preferred_artist="Tamia",
             preferred_tags=["r&b"],
             mode="precise_song",
+            reason="stub",
+        )
+
+
+class _ArtistFocusSongRequestPlanner:
+    def plan(self, *, message: str, memory, weather) -> SongRequestPlan:  # noqa: ANN001
+        del message, memory, weather
+        return SongRequestPlan(
+            intent="推荐林俊杰的歌",
+            search_queries=["林俊杰"],
+            preferred_title=None,
+            preferred_artist="林俊杰",
+            preferred_tags=["深夜"],
+            mode="artist_focus",
             reason="stub",
         )
 

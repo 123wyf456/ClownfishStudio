@@ -102,6 +102,25 @@ def test_station_chat_regenerates_a_fresh_session() -> None:
     assert second_session_id != first_session_id
 
 
+def test_station_chat_first_request_creates_single_session_without_seed_roundtrip() -> None:
+    client = TestClient(app)
+    payload = make_generate_payload()
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "user_id": payload["user_id"],
+            "message": "想听一点更安静的中文歌",
+            "device_context": payload["device_context"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session"]["session_id"].startswith("session-")
+    assert "安静" in body["reply"]["text"]
+
+
 def make_generate_payload() -> dict[str, object]:
     return {
         "user_id": "station-api-user",

@@ -197,7 +197,12 @@ class MockRadioModelClient:
     def _target_track_count(self, agent_input: RadioAgentInput) -> int:
         duration = agent_input.request.user_state.duration_minutes
         available = len(agent_input.candidate_items)
-        preferred = max(3, min(6, round(duration / 7)))
+        if duration <= 25:
+            preferred = 7
+        elif duration <= 40:
+            preferred = 8
+        else:
+            preferred = 9
         return max(1, min(preferred, available))
 
     def _score_candidate(

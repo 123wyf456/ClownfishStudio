@@ -101,7 +101,7 @@ function createDesktopApi({ app, writeLog }) {
         free_text:
           payload.message || "Open ClownfishStudio and create a fresh hosted radio set.",
       },
-      max_candidates: 12,
+      max_candidates: 18,
     };
     const response = await requestJson(localConfig.serverBaseUrl, "/api/station/generate", {
       method: "POST",
@@ -165,7 +165,7 @@ async function normalizeStationResponse(payload, localConfig, musicDir) {
     .filter((item) => item?.item_type !== "narration" && item?.candidate_id);
 
   const tracks = await Promise.all(
-    playableItems.slice(0, 12).map(async (item, index) => ({
+    playableItems.slice(0, 18).map(async (item, index) => ({
       id: item.item_id || `track-${index}`,
       candidateId: item.candidate_id || `candidate-${index}`,
       title: item.title || "Untitled",

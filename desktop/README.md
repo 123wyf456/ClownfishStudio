@@ -50,6 +50,7 @@ The current client is a fixed-size 540 x 960 Windows desktop app with:
 - a program strip that shows three tracks at a time
 - companion chat inside the same device frame
 - settings for Agent, OpenWeather, NetEase Cloud Music, and Fish Audio
+- persistent NetEase metadata cache under app user data to speed up relaunches
 - local music caching for remote NetEase playback URLs
 
 Provider failures do not stop the app. Missing keys, expired NetEase cookies,

@@ -41,6 +41,7 @@ export function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const narrationRef = useRef<HTMLAudioElement | null>(null);
   const hasBootstrappedRef = useRef(false);
+  const requestInFlightRef = useRef(false);
   const [theme, setTheme] = useState<ThemeMode>(() =>
     window.localStorage.getItem("clownfish-theme") === "dark" ? "dark" : "light",
   );
@@ -83,8 +84,20 @@ export function App() {
     setWarnings(nextWarnings);
   }, []);
 
+  const dismissNotice = useCallback((message: string) => {
+    if (!message) {
+      return;
+    }
+    setWarnings((items) => items.filter((item) => item !== message));
+    setApiError((value) => (value === message ? "" : value));
+  }, []);
+
   const requestAgentStation = useCallback(
     async (message: string) => {
+      if (requestInFlightRef.current) {
+        return;
+      }
+      requestInFlightRef.current = true;
       setIsAdapting(true);
       setApiError("");
       try {
@@ -101,6 +114,7 @@ export function App() {
       } catch (error) {
         setApiError(error instanceof Error ? error.message : "Station generation failed");
       } finally {
+        requestInFlightRef.current = false;
         setIsAdapting(false);
       }
     },
@@ -138,39 +152,40 @@ export function App() {
   const handleSendMessage = useCallback(
     (text: string) => {
       const cleanText = text.trim();
-      if (!cleanText) {
+      if (!cleanText || isAdapting || requestInFlightRef.current || !settings) {
         return;
       }
+      requestInFlightRef.current = true;
 
       setMessages((items) => [...items, makeMessage("user", cleanText)]);
 
-      if (settings) {
-        setIsAdapting(true);
-        setApiError("");
-        chatStation({ city: settings.weatherCity || station.city, message: cleanText })
-          .then((response) => {
-            if (response?.station) {
-              applyRemoteStation(response.station, response.warnings ?? []);
-              setRuntime(response.runtime);
-              const replyText =
-                response.station.chatReply ||
-                response.station.agentLine ||
-                response.station.greeting ||
-                "I retuned the station.";
-              setMessages((items) => [
-                ...items,
-                makeMessage("agent", replyText),
-              ]);
-            }
-          })
-          .catch((error: unknown) => {
-            setApiError(error instanceof Error ? error.message : "Chat request failed");
-          })
-          .finally(() => setIsAdapting(false));
-        return;
-      }
+      setIsAdapting(true);
+      setApiError("");
+      chatStation({ city: settings.weatherCity || station.city, message: cleanText })
+        .then((response) => {
+          if (response?.station) {
+            applyRemoteStation(response.station, response.warnings ?? []);
+            setRuntime(response.runtime);
+            const replyText =
+              response.station.chatReply ||
+              response.station.agentLine ||
+              response.station.greeting ||
+              "I retuned the station.";
+            setMessages((items) => [
+              ...items,
+              makeMessage("agent", replyText),
+            ]);
+          }
+        })
+        .catch((error: unknown) => {
+          setApiError(error instanceof Error ? error.message : "Chat request failed");
+        })
+        .finally(() => {
+          requestInFlightRef.current = false;
+          setIsAdapting(false);
+        });
     },
-    [applyRemoteStation, settings, station.city],
+    [applyRemoteStation, isAdapting, settings, station.city],
   );
 
   async function handleSaveSettings(nextSettings: ApiSettings) {
@@ -410,6 +425,7 @@ export function App() {
                 isAdapting={isAdapting}
                 isInitializing={!isStationReady && isAdapting}
                 messages={messages}
+                onDismissNotice={dismissNotice}
                 onSendMessage={handleSendMessage}
                 runtime={runtime}
                 warnings={warnings}

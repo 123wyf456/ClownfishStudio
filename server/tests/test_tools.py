@@ -28,11 +28,28 @@ from app.tools import (
     search_music_candidates,
     search_podcast_candidates,
 )
+from app.tools import netease_music_tool as netease_module
 from app.tools.netease_music_tool import (
     _extract_playlist_genres,
+    _get_json,
     _read_artists,
     search_netease_music_candidates,
 )
+
+
+class FakeResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001
+        del exc_type, exc, tb
+        return False
 
 
 def test_weather_tool_returns_city_weather_and_default_fallback() -> None:
@@ -120,6 +137,35 @@ def test_netease_preference_candidates_returns_list_without_configuration() -> N
     candidates = get_netease_preference_candidates(limit=2)
 
     assert isinstance(candidates, list)
+
+
+def test_netease_json_requests_use_local_cache(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(netease_module, "NETEASE_CACHE_DIR", tmp_path)
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout=15):  # noqa: ANN001
+        del request, timeout
+        calls["count"] += 1
+        return FakeResponse(b'{"code":200,"data":{"ok":true}}')
+
+    monkeypatch.setattr(netease_module, "urlopen", fake_urlopen)
+
+    first = _get_json(
+        base_url="http://localhost:3000",
+        path="/login/status",
+        params={},
+        cookie="MUSIC_U=test-cookie",
+    )
+    second = _get_json(
+        base_url="http://localhost:3000",
+        path="/login/status",
+        params={},
+        cookie="MUSIC_U=test-cookie",
+    )
+
+    assert first == second
+    assert calls["count"] == 1
+    assert list(tmp_path.glob("*.json"))
 
 
 def test_podcast_search_tool_reads_candidates_from_mock_json() -> None:

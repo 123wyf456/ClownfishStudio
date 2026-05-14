@@ -8,6 +8,7 @@ __pycache__/
 dist/
 release/
 generated_audio/
+server/cache/
 *.egg-info/
 
 .env

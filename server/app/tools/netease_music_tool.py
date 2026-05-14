@@ -1,15 +1,17 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import Counter
 from dataclasses import dataclass
-from time import monotonic
+from pathlib import Path
+from time import monotonic, time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
-from app.core.config import get_settings
+from app.core.config import RUNTIME_ROOT, get_settings
 from app.schemas import (
     CandidateItem,
     ContentType,
@@ -20,6 +22,8 @@ from app.schemas import (
 )
 
 PREFERENCE_CACHE_TTL_SECONDS = 15 * 60
+NETEASE_RESPONSE_CACHE_TTL_SECONDS = 24 * 60 * 60
+NETEASE_CACHE_DIR = RUNTIME_ROOT / "cache" / "netease"
 
 
 class NeteaseMusicToolError(RuntimeError):
@@ -71,8 +75,7 @@ def search_netease_music_candidates(
         cookie=settings.netease_cookie,
         playback_level=settings.netease_playback_level,
         seed_songs=[
-            NeteaseSeedSong(song=song, tags=("search_result",), source="search")
-            for song in songs
+            NeteaseSeedSong(song=song, tags=("search_result",), source="search") for song in songs
         ],
         limit=limit,
     )
@@ -787,9 +790,7 @@ def _build_recommended_playlist_seed_songs(
                 NeteaseSeedSong(
                     song=song,
                     tags=tuple(
-                        _merge_unique_strings(
-                            [*playlist_tags, "recommended_playlist_seed"]
-                        )
+                        _merge_unique_strings([*playlist_tags, "recommended_playlist_seed"])
                     ),
                     source=f"recommended_playlist:{playlist_id}",
                 )
@@ -1059,8 +1060,10 @@ def _get_playback_urls(
             continue
         song_id = item.get("id")
         url = item.get("url")
-        if isinstance(song_id, int) and isinstance(url, str) and url.startswith(
-            ("http://", "https://")
+        if (
+            isinstance(song_id, int)
+            and isinstance(url, str)
+            and url.startswith(("http://", "https://"))
         ):
             playback_urls[song_id] = url
 
@@ -1073,6 +1076,16 @@ def _get_json(
     params: dict[str, int | str],
     cookie: str | None,
 ) -> dict[str, object]:
+    cache_key = _build_response_cache_key(
+        base_url=base_url,
+        path=path,
+        params=params,
+        cookie=cookie,
+    )
+    cached_payload = _read_cached_json_response(cache_key)
+    if cached_payload is not None:
+        return cached_payload
+
     headers = {"Accept": "application/json"}
     if cookie:
         headers["Cookie"] = cookie
@@ -1094,9 +1107,68 @@ def _get_json(
         if not isinstance(payload, dict):
             raise NeteaseMusicToolError("NetEase API returned non-object JSON")
 
+        _write_cached_json_response(cache_key, payload)
         return payload
 
     raise NeteaseMusicToolError(f"NetEase API failed: {last_network_error}") from last_network_error
+
+
+def _build_response_cache_key(
+    base_url: str,
+    path: str,
+    params: dict[str, int | str],
+    cookie: str | None,
+) -> str:
+    normalized_params = urlencode(sorted(params.items()))
+    raw_key = "|".join(
+        [
+            base_url.rstrip("/"),
+            path,
+            normalized_params,
+            cookie or "",
+        ]
+    )
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def _read_cached_json_response(cache_key: str) -> dict[str, object] | None:
+    cache_path = _response_cache_path(cache_key)
+    if not cache_path.exists():
+        return None
+
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    cached_at = payload.get("cached_at")
+    data = payload.get("data")
+    if not isinstance(cached_at, (int, float)) or not isinstance(data, dict):
+        return None
+
+    if time() - float(cached_at) > NETEASE_RESPONSE_CACHE_TTL_SECONDS:
+        return None
+
+    return data
+
+
+def _write_cached_json_response(cache_key: str, data: dict[str, object]) -> None:
+    cache_path = _response_cache_path(cache_key)
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.with_suffix(".tmp")
+        payload = {"cached_at": time(), "data": data}
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(cache_path)
+    except OSError:
+        return
+
+
+def _response_cache_path(cache_key: str) -> Path:
+    return NETEASE_CACHE_DIR / f"{cache_key}.json"
 
 
 def _candidate_base_urls(base_url: str) -> list[str]:
@@ -1163,4 +1235,3 @@ def _merge_unique_strings(values: list[str]) -> list[str]:
         seen.add(key)
         merged.append(normalized)
     return merged
-

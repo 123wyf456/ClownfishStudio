@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowUp, Bot, Mic, UserRound } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { ArrowUp, Bot, Mic, UserRound, X } from "lucide-react";
 import { motion } from "framer-motion";
 import type { RuntimeStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ type ChatPanelProps = {
   isInitializing?: boolean;
   messages: ChatMessage[];
   onSendMessage: (text: string) => void;
+  onDismissNotice?: (message: string) => void;
   runtime: RuntimeStatus | null;
   warnings: string[];
 };
@@ -21,13 +22,23 @@ export function ChatPanel({
   isInitializing = false,
   messages,
   onSendMessage,
+  onDismissNotice,
   runtime,
   warnings,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState("");
+  const [waitingIndex, setWaitingIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeWarnings = [apiError, ...warnings].filter(Boolean).slice(0, 2);
+  const waitingPhrases = useMemo(
+    () =>
+      isInitializing
+        ? ["电台正在初始化", "正在校准今夜的频道", "正在准备第一段开场"]
+        : ["电台正在回应", "正在收拢你的偏好", "正在整理下一段节目"],
+    [isInitializing],
+  );
+  const waitingText = waitingPhrases[waitingIndex % waitingPhrases.length];
 
   useEffect(() => {
     const scrollNode = scrollRef.current;
@@ -37,8 +48,23 @@ export function ChatPanel({
     scrollNode.scrollTo({ top: scrollNode.scrollHeight, behavior: "smooth" });
   }, [messages.length, activeWarnings.length]);
 
+  useEffect(() => {
+    if (!isAdapting) {
+      setWaitingIndex(0);
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setWaitingIndex((value) => value + 1);
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [isAdapting]);
+
   function submitMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isAdapting) {
+      return;
+    }
     const cleanDraft = draft.trim();
     if (!cleanDraft) {
       return;
@@ -49,6 +75,9 @@ export function ChatPanel({
   }
 
   function handleVoiceCue() {
+    if (isAdapting) {
+      return;
+    }
     setDraft("Make it warmer and a little brighter.");
     window.setTimeout(() => inputRef.current?.focus(), 0);
   }
@@ -82,7 +111,7 @@ export function ChatPanel({
                 <span className="h-1.5 w-1.5 rounded-full bg-muted/25" />
               </div>
               <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted">
-                {isInitializing ? "Tuning station" : "Station is quiet"}
+                {isInitializing ? "正在校准电台" : "电台暂时安静"}
               </p>
             </div>
           </div>
@@ -126,16 +155,40 @@ export function ChatPanel({
 
       {activeWarnings.length > 0 ? (
         <div className="warning-panel mt-2 rounded-[12px] border px-3 py-2 text-[9px] leading-relaxed">
-          {activeWarnings.join(" ")}
+          <div className="flex items-start justify-between gap-2">
+            <p className="min-w-0 flex-1">{activeWarnings.join(" ")}</p>
+            {onDismissNotice ? (
+              <button
+                aria-label="Close notice"
+                className="mt-[1px] shrink-0 rounded-full p-0.5 text-current/70 transition hover:bg-current/10 hover:text-current"
+                onClick={() => onDismissNotice(activeWarnings[0])}
+                type="button"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
       {isAdapting ? (
         <div className="mt-2 flex items-center gap-2 pl-10">
-          <span className="h-1.5 w-1.5 rounded-full bg-[#5b8de2]" />
-          <span className="h-1.5 w-1.5 rounded-full bg-[#8eaee7]" />
-          <span className="h-1.5 w-1.5 rounded-full bg-[#c8c2b7]" />
-          <span className="text-[8px] text-muted">Station is listening.</span>
+          <div className="flex items-center gap-1.5" aria-hidden="true">
+            {[0, 1, 2].map((index) => (
+              <motion.span
+                animate={{ opacity: [0.25, 1, 0.25], y: [0, -1.5, 0] }}
+                className="h-1.5 w-1.5 rounded-full bg-[#7f9ef4]"
+                key={index}
+                transition={{
+                  duration: 1.15,
+                  ease: "easeInOut",
+                  repeat: Number.POSITIVE_INFINITY,
+                  delay: index * 0.15,
+                }}
+              />
+            ))}
+          </div>
+          <span className="text-[8px] text-muted">{waitingText}</span>
         </div>
       ) : null}
 
@@ -146,8 +199,9 @@ export function ChatPanel({
         <input
           aria-label="Ask ClownfishStudio"
           className="min-w-0 flex-1 bg-transparent text-[11px] text-ink outline-none placeholder:text-muted/75"
+          disabled={isAdapting}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="Ask ClownfishStudio..."
+          placeholder={isAdapting ? "电台正在回应..." : "和电台说说现在想听什么"}
           ref={inputRef}
           value={draft}
         />
@@ -156,6 +210,7 @@ export function ChatPanel({
           size="icon"
           variant="ghost"
           className="h-8 w-8 bg-panel/70"
+          disabled={isAdapting}
           onClick={handleVoiceCue}
           type="button"
         >
@@ -166,6 +221,7 @@ export function ChatPanel({
           size="icon"
           variant="primary"
           className="send-button h-8 w-8"
+          disabled={isAdapting || !draft.trim()}
           type="submit"
         >
           <ArrowUp className="h-4 w-4" />

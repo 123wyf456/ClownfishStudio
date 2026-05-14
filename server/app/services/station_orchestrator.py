@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import re
 from uuid import uuid4
 
 from app.agents import RadioAgentRuntime
@@ -49,6 +50,8 @@ class StationOrchestrator:
             city=weather.get("city"),
             condition=weather.get("condition"),
             title=generation.program.title,
+            locale=request.device_context.locale,
+            request_text=request.user_state.free_text,
         )
         tts_audio_url, tts_text = self._tts_provider.synthesize(greeting)
         session_warnings = [*generation.warnings]
@@ -101,12 +104,20 @@ class StationOrchestrator:
                     },
                 )
             )
-            state = get_station_session(request.user_id)
-            if state is None:
+            reply_text = self._build_chat_reply(session_response.session, request.message)
+            append_chat_message(request.user_id, ChatMessage(role="user", text=request.message))
+            reply = ChatMessage(role="assistant", text=reply_text)
+            append_chat_message(request.user_id, reply)
+            current_state = get_station_session(request.user_id)
+            if current_state is None:
                 raise RuntimeError("station session was not created")
-            seed_session = session_response.session
-        else:
-            seed_session = state.session
+            return StationChatResponse(
+                reply=reply,
+                session=current_state.session,
+                runtime=self.runtime_status(),
+            )
+
+        seed_session = state.session
 
         user_message = ChatMessage(role="user", text=request.message)
         append_chat_message(request.user_id, user_message)
@@ -163,22 +174,26 @@ class StationOrchestrator:
         city: object,
         condition: object,
         title: str,
+        locale: str | None,
+        request_text: str | None,
     ) -> str:
-        city_text = city.strip() if isinstance(city, str) and city.strip() else "your city"
-        condition_text = (
-            condition.strip() if isinstance(condition, str) and condition.strip() else "tonight"
-        )
-        return (
-            f"Welcome to {title}. {city_text} feels a little like {condition_text} right now, "
-            "so we will start with something gentle."
-        )
+        del city
+        if (
+            _prefer_chinese(request_text or "")
+            or (isinstance(locale, str) and locale.lower().startswith("zh"))
+            or _prefer_chinese(title)
+        ):
+            condition_text = condition.strip() if isinstance(condition, str) and condition.strip() else "今晚"
+            return f"这里是《{title}》。先陪你把频道调稳，今夜的底色会更偏向{condition_text}一点。"
+
+        return f"Welcome to {title}. I tuned the opening gently, so the station can settle in with you."
 
     def _build_chat_reply(self, session: StationSession, message: str) -> str:
         lead = session.program.blocks[0].title if session.program.blocks else session.program.title
-        return (
-            f"I heard you: {message.strip()}. Next I will keep shaping the station around "
-            f"{lead} so it stays closer to what you need right now."
-        )
+        clean_message = message.strip()
+        if _prefer_chinese(clean_message):
+            return f"收到，关于“{clean_message}”，我已经把后面的节目重新收拢，会更贴近你刚才说的感觉。"
+        return f"Got it. I retuned the next stretch around {lead}, so it stays closer to what you asked for."
 
 
 def _first_playable_item(items: list[ProgramItem]) -> ProgramItem | None:
@@ -186,4 +201,12 @@ def _first_playable_item(items: list[ProgramItem]) -> ProgramItem | None:
         if item.item_type != "narration":
             return item
     return None
+
+
+def _prefer_chinese(value: str) -> bool:
+    if not value:
+        return False
+    chinese_count = len(re.findall(r"[\u4e00-\u9fff]", value))
+    ascii_word_count = len(re.findall(r"[A-Za-z]{2,}", value))
+    return chinese_count > 0 and chinese_count >= ascii_word_count
 

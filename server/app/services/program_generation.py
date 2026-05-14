@@ -156,9 +156,18 @@ class ProgramGenerationService:
         )
         recent_creators = _recent_creators(resolved_history)
         has_targeting = bool(query_plan or tags)
+        is_strict_targeting = request_plan.mode in {"artist_focus", "precise_song"}
 
-        preference_candidates = get_netease_preference_candidates(limit=max(8, music_limit))
-        personalized_candidates = get_netease_personalized_candidates(limit=max(8, music_limit))
+        preference_candidates = (
+            []
+            if is_strict_targeting
+            else get_netease_preference_candidates(limit=max(8, music_limit))
+        )
+        personalized_candidates = (
+            []
+            if is_strict_targeting
+            else get_netease_personalized_candidates(limit=max(8, music_limit))
+        )
 
         targeted_music_candidates: list[CandidateItem] = []
         per_query_limit = max(4, min(6, music_limit))
@@ -170,6 +179,13 @@ class ProgramGenerationService:
                     search_query=query,
                 )
             )
+
+        targeted_music_candidates = _filter_targeted_candidates(
+            targeted_music_candidates,
+            preferred_title=request_plan.preferred_title,
+            preferred_artist=request_plan.preferred_artist,
+            mode=request_plan.mode,
+        )
 
         fallback_music_candidates: list[CandidateItem] = []
         if (
@@ -204,6 +220,8 @@ class ProgramGenerationService:
             limit=music_limit,
             preferred_title=request_plan.preferred_title,
             preferred_artist=request_plan.preferred_artist,
+            strict_artist_only=request_plan.mode == "artist_focus",
+            strict_title_only=request_plan.mode == "precise_song",
         )
 
         if not music_candidates:
@@ -227,6 +245,8 @@ class ProgramGenerationService:
                 limit=music_limit,
                 preferred_title=request_plan.preferred_title,
                 preferred_artist=request_plan.preferred_artist,
+                strict_artist_only=request_plan.mode == "artist_focus",
+                strict_title_only=request_plan.mode == "precise_song",
             )
 
         podcast_candidates: list[CandidateItem] = []
@@ -440,11 +460,34 @@ def _prioritize_candidate_pool(
     limit: int,
     preferred_title: str | None = None,
     preferred_artist: str | None = None,
+    strict_artist_only: bool = False,
+    strict_title_only: bool = False,
 ) -> list[CandidateItem]:
     if limit <= 0:
         return []
 
     deduplicated = _deduplicate_candidates(candidates, limit=len(candidates))
+    if strict_title_only and preferred_title:
+        strict_matches = [
+            candidate
+            for candidate in deduplicated
+            if _match_priority(candidate.title, preferred_title) >= 2
+            and (
+                not preferred_artist
+                or _match_priority(candidate.creator, preferred_artist) >= 1
+            )
+        ]
+        if strict_matches:
+            deduplicated = strict_matches
+    elif strict_artist_only and preferred_artist:
+        strict_matches = [
+            candidate
+            for candidate in deduplicated
+            if _match_priority(candidate.creator, preferred_artist) >= 2
+        ]
+        if strict_matches:
+            deduplicated = strict_matches
+
     fresh_candidates = [
         candidate for candidate in deduplicated if candidate.candidate_id not in avoid_candidate_ids
     ]
@@ -481,6 +524,40 @@ def _prioritize_candidate_pool(
             )
         )
     return selected[:limit]
+
+
+def _filter_targeted_candidates(
+    candidates: list[CandidateItem],
+    preferred_title: str | None,
+    preferred_artist: str | None,
+    mode: str,
+) -> list[CandidateItem]:
+    if not candidates:
+        return []
+
+    if mode == "precise_song" and preferred_title:
+        exact_title_matches = [
+            candidate
+            for candidate in candidates
+            if _match_priority(candidate.title, preferred_title) >= 2
+            and (
+                not preferred_artist
+                or _match_priority(candidate.creator, preferred_artist) >= 1
+            )
+        ]
+        if exact_title_matches:
+            return exact_title_matches
+
+    if mode == "artist_focus" and preferred_artist:
+        artist_matches = [
+            candidate
+            for candidate in candidates
+            if _match_priority(candidate.creator, preferred_artist) >= 2
+        ]
+        if artist_matches:
+            return artist_matches
+
+    return candidates
 
 
 def _sort_candidates_for_priority(
