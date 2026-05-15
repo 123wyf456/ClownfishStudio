@@ -23,7 +23,7 @@ def test_generate_program_endpoint_returns_radio_program() -> None:
 
     assert payload["request_id"].startswith("request-")
     assert payload["candidate_count"] > 0
-    assert program["context_snapshot"]["weather"]["city"] == "Shanghai"
+    assert program["context_snapshot"]["weather"]["source"] == "disabled"
     assert playable_items
     assert all(item["candidate_id"] for item in playable_items)
     assert get_program(program["program_id"]) is not None

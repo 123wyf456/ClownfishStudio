@@ -168,6 +168,35 @@ def test_netease_json_requests_use_local_cache(monkeypatch, tmp_path) -> None:
     assert list(tmp_path.glob("*.json"))
 
 
+def test_netease_search_bypasses_local_cache(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(netease_module, "NETEASE_CACHE_DIR", tmp_path)
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout=15):  # noqa: ANN001
+        del request, timeout
+        calls["count"] += 1
+        return FakeResponse(b'{"code":200,"result":{"songs":[]}}')
+
+    monkeypatch.setattr(netease_module, "urlopen", fake_urlopen)
+
+    first = _get_json(
+        base_url="http://localhost:3000",
+        path="/search",
+        params={"keywords": "Lamp", "limit": 4, "type": 1},
+        cookie="MUSIC_U=test-cookie",
+    )
+    second = _get_json(
+        base_url="http://localhost:3000",
+        path="/search",
+        params={"keywords": "Lamp", "limit": 4, "type": 1},
+        cookie="MUSIC_U=test-cookie",
+    )
+
+    assert first == second
+    assert calls["count"] == 2
+    assert list(tmp_path.glob("*.json")) == []
+
+
 def test_podcast_search_tool_reads_candidates_from_mock_json() -> None:
     candidates = search_podcast_candidates(query="familiar", limit=5)
 

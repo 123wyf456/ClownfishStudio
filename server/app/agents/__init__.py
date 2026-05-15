@@ -1,6 +1,8 @@
 """Agent runtime modules."""
 
 from app.agents.radio_agent import (
+    AnthropicRadioModelClient,
+    ChatTurnDecision,
     MockRadioModelClient,
     OpenAIResponsesRadioModelClient,
     RadioAgentInput,
@@ -8,6 +10,7 @@ from app.agents.radio_agent import (
 )
 from app.agents.runtime import AgentOutputValidationError, RadioAgentRuntime
 from app.agents.song_request_agent import (
+    AnthropicSongRequestPlanner,
     MockSongRequestPlanner,
     OpenAISongRequestPlanner,
     SongRequestPlan,
@@ -17,6 +20,9 @@ from app.agents.song_request_agent import (
 
 __all__ = [
     "AgentOutputValidationError",
+    "AnthropicRadioModelClient",
+    "AnthropicSongRequestPlanner",
+    "ChatTurnDecision",
     "MockRadioModelClient",
     "MockSongRequestPlanner",
     "OpenAIResponsesRadioModelClient",

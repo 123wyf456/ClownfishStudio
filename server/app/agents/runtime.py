@@ -1,5 +1,12 @@
-from app.agents.prompts import build_radio_prompt
+from app.agents.prompts import (
+    build_chat_turn_prompt,
+    build_radio_prompt,
+    build_station_chat_reply_prompt,
+    build_station_greeting_prompt,
+)
 from app.agents.radio_agent import (
+    AnthropicRadioModelClient,
+    ChatTurnDecision,
     MockRadioModelClient,
     OpenAIResponsesRadioModelClient,
     RadioAgentInput,
@@ -9,12 +16,14 @@ from app.core.config import get_settings
 from app.schemas import (
     CalendarEvent,
     CandidateItem,
+    ChatMessage,
     ContentType,
     ContextSnapshot,
     GenerateProgramRequest,
     ProgramItem,
     ProgramItemType,
     RadioProgram,
+    StationSession,
     UserMusicMemory,
 )
 
@@ -35,6 +44,7 @@ class RadioAgentRuntime:
         memory: UserMusicMemory,
         history: list[dict[str, str]],
         candidate_items: list[CandidateItem],
+        chat_history: list[ChatMessage] | None = None,
     ) -> RadioProgram:
         if not candidate_items:
             raise AgentOutputValidationError(
@@ -52,6 +62,7 @@ class RadioAgentRuntime:
             memory=memory,
             history=history,
             candidate_items=candidate_items,
+            chat_history=chat_history,
         )
         agent_input = RadioAgentInput(
             request=request,
@@ -59,12 +70,54 @@ class RadioAgentRuntime:
             memory=memory,
             history=history,
             candidate_items=candidate_items,
+            chat_history=list(chat_history or []),
             prompt=prompt,
         )
         raw_program = self._model_client.generate_program(agent_input)
         program = RadioProgram.model_validate(raw_program)
         self._validate_candidate_references(program=program, candidate_items=candidate_items)
         return self._hydrate_program_items(program=program, candidate_items=candidate_items)
+
+    def generate_greeting(
+        self,
+        *,
+        program: RadioProgram,
+        chat_history: list[ChatMessage] | None = None,
+    ) -> str:
+        prompt = build_station_greeting_prompt(
+            request_context=program.context_snapshot,
+            program=program,
+            chat_history=chat_history,
+        )
+        return self._model_client.generate_short_text(prompt)
+
+    def generate_chat_reply(
+        self,
+        *,
+        session: StationSession,
+        message: str,
+        chat_history: list[ChatMessage] | None = None,
+    ) -> str:
+        prompt = build_station_chat_reply_prompt(
+            session=session,
+            message=message,
+            chat_history=chat_history,
+        )
+        return self._model_client.generate_short_text(prompt)
+
+    def plan_chat_turn(
+        self,
+        *,
+        session: StationSession,
+        message: str,
+        chat_history: list[ChatMessage] | None = None,
+    ) -> ChatTurnDecision:
+        prompt = build_chat_turn_prompt(
+            session=session,
+            message=message,
+            chat_history=chat_history,
+        )
+        return self._model_client.plan_chat_turn(prompt)
 
     def _validate_candidate_references(
         self,
@@ -144,26 +197,26 @@ def _build_default_model_client() -> RadioModelClient:
     if settings.radio_agent_provider == "mock":
         return MockRadioModelClient()
 
-    api_key: str | None
-    base_url: str
-    model: str
+    if settings.radio_agent_provider == "anthropic":
+        if not settings.anthropic_api_key:
+            raise AgentOutputValidationError(
+                "RADIO_AGENT_PROVIDER is configured for Anthropic but its API key is missing"
+            )
+        return AnthropicRadioModelClient(
+            api_key=settings.anthropic_api_key,
+            model=settings.radio_agent_model,
+            base_url=settings.anthropic_base_url,
+        )
 
-    if settings.radio_agent_provider == "deepseek":
-        api_key = settings.deepseek_api_key
-        base_url = settings.deepseek_base_url
-        model = settings.deepseek_model
-    else:
-        api_key = settings.openai_api_key
-        base_url = settings.openai_base_url
-        model = settings.radio_agent_model
-
-    if not api_key:
+    if not settings.openai_api_key:
         raise AgentOutputValidationError(
-            "RADIO_AGENT_PROVIDER is configured for a live model but its API key is missing"
+            "RADIO_AGENT_PROVIDER is configured for OpenAI-compatible mode "
+            "but its API key is missing"
         )
 
     return OpenAIResponsesRadioModelClient(
-        api_key=api_key,
-        model=model,
-        base_url=base_url,
+        api_key=settings.openai_api_key,
+        model=settings.radio_agent_model,
+        base_url=settings.openai_base_url,
+        prefer_chat_completions=True,
     )

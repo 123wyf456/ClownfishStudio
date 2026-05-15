@@ -80,8 +80,8 @@ export function SettingsPanel({
                 value={draft.agentProvider}
               >
                 <option value="mock">mock</option>
-                <option value="deepseek">deepseek</option>
-                <option value="openai">openai-compatible</option>
+                <option value="openai">OpenAI-compatible</option>
+                <option value="anthropic">Anthropic</option>
               </select>
             </label>
             <Field label="Model" value={draft.agentModel} onChange={(agentModel) => setDraft((value) => ({ ...value, agentModel }))} />
@@ -90,10 +90,10 @@ export function SettingsPanel({
           </section>
 
           <section className="hardware-panel grid gap-2 rounded-[16px] border border-line/70 p-3">
-            <SectionHeader label="OpenWeather" state={runtime?.weather.mode ?? "mock"} />
-            <Field label="City" value={draft.weatherCity} onChange={(weatherCity) => setDraft((value) => ({ ...value, weatherCity }))} />
-            <Field label="Base URL" value={draft.openweatherBaseUrl} onChange={(openweatherBaseUrl) => setDraft((value) => ({ ...value, openweatherBaseUrl }))} />
-            <Field label="API Key" secret value={draft.openweatherApiKey} onChange={(openweatherApiKey) => setDraft((value) => ({ ...value, openweatherApiKey }))} />
+            <SectionHeader label="Weather" state={runtime?.weather.mode ?? "disabled"} />
+            <p className="text-[10px] leading-relaxed text-muted">
+              Weather lookup is temporarily disabled.
+            </p>
           </section>
 
           <section className="hardware-panel grid gap-2 rounded-[16px] border border-line/70 p-3">
@@ -111,10 +111,10 @@ export function SettingsPanel({
           </section>
 
           <section className="hardware-panel grid gap-2 rounded-[16px] border border-line/70 p-3">
-            <SectionHeader label="Fish Audio" state={runtime?.tts.mode ?? "mock"} />
-            <Field label="TTS URL" value={draft.fishAudioBaseUrl} onChange={(fishAudioBaseUrl) => setDraft((value) => ({ ...value, fishAudioBaseUrl }))} />
-            <Field label="Voice ID" value={draft.fishAudioVoiceId} onChange={(fishAudioVoiceId) => setDraft((value) => ({ ...value, fishAudioVoiceId }))} />
-            <Field label="API Key" secret value={draft.fishAudioApiKey} onChange={(fishAudioApiKey) => setDraft((value) => ({ ...value, fishAudioApiKey }))} />
+            <SectionHeader label="Voice" state="disabled" />
+            <p className="text-[10px] leading-relaxed text-muted">
+              Voice narration is temporarily paused.
+            </p>
           </section>
         </div>
 

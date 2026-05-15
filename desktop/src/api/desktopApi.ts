@@ -1,7 +1,62 @@
-import { defaultSettings, type ConfigResponse, type GenerateStationResponse } from "@/api/types";
+import {
+  defaultSettings,
+  type ConfigResponse,
+  type DeviceLocation,
+  type GenerateStationResponse,
+} from "@/api/types";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function normalizeAgentProvider(
+  value: unknown,
+  fallback: ConfigResponse["config"]["agentProvider"] = defaultSettings.agentProvider,
+): ConfigResponse["config"]["agentProvider"] {
+  if (value === "anthropic") {
+    return "anthropic";
+  }
+  if (value === "openai" || value === "deepseek" || value === "codex") {
+    return "openai";
+  }
+  if (value === "mock") {
+    return "mock";
+  }
+  return fallback;
+}
+
+function agentApiKeyFromConfig(
+  config: Record<string, unknown>,
+  provider: ConfigResponse["config"]["agentProvider"],
+  fallback: string,
+): string {
+  if (provider === "anthropic") {
+    return typeof config.anthropic_api_key === "string" ? config.anthropic_api_key : fallback;
+  }
+  if (typeof config.openai_api_key === "string" && config.openai_api_key) {
+    return config.openai_api_key;
+  }
+  return typeof config.deepseek_api_key === "string" && config.deepseek_api_key
+    ? config.deepseek_api_key
+    : fallback;
+}
+
+function agentBaseUrlFromConfig(
+  config: Record<string, unknown>,
+  provider: ConfigResponse["config"]["agentProvider"],
+  fallback: string,
+): string {
+  if (provider === "anthropic") {
+    return typeof config.anthropic_base_url === "string" && config.anthropic_base_url
+      ? config.anthropic_base_url
+      : "https://api.anthropic.com";
+  }
+  if (typeof config.openai_base_url === "string" && config.openai_base_url) {
+    return config.openai_base_url;
+  }
+  return typeof config.deepseek_base_url === "string" && config.deepseek_base_url
+    ? config.deepseek_base_url
+    : fallback;
 }
 
 export async function loadConfig(): Promise<ConfigResponse> {
@@ -23,26 +78,13 @@ export async function loadConfig(): Promise<ConfigResponse> {
         typeof localConfig.serverBaseUrl === "string"
           ? localConfig.serverBaseUrl
           : defaultSettings.serverBaseUrl,
-      agentProvider:
-        (typeof remoteConfig.radio_agent_provider === "string"
-          ? remoteConfig.radio_agent_provider
-          : defaultSettings.agentProvider) as ConfigResponse["config"]["agentProvider"],
+      agentProvider: normalizeAgentProvider(remoteConfig.radio_agent_provider),
       agentModel:
         typeof remoteConfig.radio_agent_model === "string"
           ? remoteConfig.radio_agent_model
           : defaultSettings.agentModel,
-      agentApiKey:
-        typeof remoteConfig.deepseek_api_key === "string" && remoteConfig.deepseek_api_key
-          ? remoteConfig.deepseek_api_key
-          : typeof remoteConfig.openai_api_key === "string"
-            ? remoteConfig.openai_api_key
-            : "",
-      agentBaseUrl:
-        typeof remoteConfig.deepseek_base_url === "string" && remoteConfig.deepseek_base_url
-          ? remoteConfig.deepseek_base_url
-          : typeof remoteConfig.openai_base_url === "string"
-            ? remoteConfig.openai_base_url
-            : defaultSettings.agentBaseUrl,
+      agentApiKey: agentApiKeyFromConfig(remoteConfig, normalizeAgentProvider(remoteConfig.radio_agent_provider), ""),
+      agentBaseUrl: agentBaseUrlFromConfig(remoteConfig, normalizeAgentProvider(remoteConfig.radio_agent_provider), defaultSettings.agentBaseUrl),
       openweatherApiKey:
         typeof remoteConfig.openweather_api_key === "string"
           ? remoteConfig.openweather_api_key
@@ -89,7 +131,7 @@ export async function saveConfig(config: ConfigResponse["config"]): Promise<Conf
 }
 
 export async function generateStation(payload: {
-  city?: string;
+  deviceLocation?: DeviceLocation | null;
   message?: string;
 }): Promise<GenerateStationResponse | null> {
   const response = await window.clownfishApi?.generateStation(payload);
@@ -97,7 +139,7 @@ export async function generateStation(payload: {
 }
 
 export async function chatStation(payload: {
-  city?: string;
+  deviceLocation?: DeviceLocation | null;
   message: string;
 }): Promise<GenerateStationResponse | null> {
   const response = await window.clownfishApi?.chatStation(payload);
@@ -116,26 +158,21 @@ function loadConfigFromResponse(response: Record<string, unknown>, fallback: Con
         typeof localConfig.serverBaseUrl === "string"
           ? localConfig.serverBaseUrl
           : fallback.serverBaseUrl,
-      agentProvider:
-        (typeof remoteConfig.radio_agent_provider === "string"
-          ? remoteConfig.radio_agent_provider
-          : fallback.agentProvider) as ConfigResponse["config"]["agentProvider"],
+      agentProvider: normalizeAgentProvider(remoteConfig.radio_agent_provider, fallback.agentProvider),
       agentModel:
         typeof remoteConfig.radio_agent_model === "string"
           ? remoteConfig.radio_agent_model
           : fallback.agentModel,
-      agentApiKey:
-        typeof remoteConfig.deepseek_api_key === "string" && remoteConfig.deepseek_api_key
-          ? remoteConfig.deepseek_api_key
-          : typeof remoteConfig.openai_api_key === "string"
-            ? remoteConfig.openai_api_key
-            : fallback.agentApiKey,
-      agentBaseUrl:
-        typeof remoteConfig.deepseek_base_url === "string" && remoteConfig.deepseek_base_url
-          ? remoteConfig.deepseek_base_url
-          : typeof remoteConfig.openai_base_url === "string"
-            ? remoteConfig.openai_base_url
-            : fallback.agentBaseUrl,
+      agentApiKey: agentApiKeyFromConfig(
+        remoteConfig,
+        normalizeAgentProvider(remoteConfig.radio_agent_provider, fallback.agentProvider),
+        fallback.agentApiKey,
+      ),
+      agentBaseUrl: agentBaseUrlFromConfig(
+        remoteConfig,
+        normalizeAgentProvider(remoteConfig.radio_agent_provider, fallback.agentProvider),
+        fallback.agentBaseUrl,
+      ),
       openweatherApiKey:
         typeof remoteConfig.openweather_api_key === "string"
           ? remoteConfig.openweather_api_key
@@ -177,7 +214,7 @@ function loadConfigFromResponse(response: Record<string, unknown>, fallback: Con
 function mockRuntime(): ConfigResponse["runtime"] {
   return {
     agent: { provider: "mock", configured: true, mode: "mock" },
-    weather: { provider: "openweather", configured: false, mode: "mock" },
+    weather: { provider: "disabled", configured: false, mode: "disabled" },
     music: { provider: "netease_cloud_music", configured: false, mode: "mock" },
     tts: { provider: "fish_audio", configured: false, mode: "mock" },
   };

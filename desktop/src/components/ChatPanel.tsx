@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { ArrowUp, Bot, Mic, UserRound, X } from "lucide-react";
+import { ArrowUp, Bot, UserRound, X } from "lucide-react";
 import { motion } from "framer-motion";
 import type { RuntimeStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -72,14 +72,6 @@ export function ChatPanel({
 
     onSendMessage(cleanDraft);
     setDraft("");
-  }
-
-  function handleVoiceCue() {
-    if (isAdapting) {
-      return;
-    }
-    setDraft("Make it warmer and a little brighter.");
-    window.setTimeout(() => inputRef.current?.focus(), 0);
   }
 
   return (
@@ -205,17 +197,6 @@ export function ChatPanel({
           ref={inputRef}
           value={draft}
         />
-        <Button
-          aria-label="Voice input"
-          size="icon"
-          variant="ghost"
-          className="h-8 w-8 bg-panel/70"
-          disabled={isAdapting}
-          onClick={handleVoiceCue}
-          type="button"
-        >
-          <Mic className="h-4 w-4" />
-        </Button>
         <Button
           aria-label="Send"
           size="icon"

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from app.agents.prompts import SYSTEM_PROMPT
 from app.schemas import (
     CandidateItem,
+    ChatMessage,
     ContentType,
     ContextSnapshot,
     GenerateProgramRequest,
@@ -77,6 +79,8 @@ RADIO_PROGRAM_DRAFT_JSON_SCHEMA: dict[str, object] = {
         },
     },
 }
+PROGRAM_AGENT_TIMEOUT_SECONDS = 60
+SHORT_TEXT_AGENT_TIMEOUT_SECONDS = 8
 
 
 @dataclass(frozen=True)
@@ -86,12 +90,25 @@ class RadioAgentInput:
     memory: UserMusicMemory
     history: list[dict[str, str]]
     candidate_items: list[CandidateItem]
+    chat_history: list[ChatMessage]
     prompt: str
+
+
+@dataclass(frozen=True)
+class ChatTurnDecision:
+    intent: str
+    reply_text: str
 
 
 class RadioModelClient(Protocol):
     def generate_program(self, agent_input: RadioAgentInput) -> dict[str, object]:
         """Return a raw RadioProgram-compatible payload."""
+
+    def generate_short_text(self, prompt: str) -> str:
+        """Return a short host text payload."""
+
+    def plan_chat_turn(self, prompt: str) -> ChatTurnDecision:
+        """Return the chat intent and a short host reply."""
 
 
 class ModelRequestError(ValueError):
@@ -129,6 +146,27 @@ class MockRadioModelClient:
             "total_duration_minutes": agent_input.request.user_state.duration_minutes,
             "generated_at": datetime.now(UTC).isoformat(),
         }
+
+    def generate_short_text(self, prompt: str) -> str:
+        message = _extract_latest_user_message(prompt) or _extract_prompt_field(
+            prompt,
+            "Latest user message:",
+        )
+        if "chat_reply" in prompt:
+            return _mock_chat_reply(message, _fallback_chat_intent(message))
+        if message:
+            return _mock_chat_reply(message, "chat_only")
+        if _prefers_chinese(prompt):
+            return "你好，我是 Clownfish。先陪你播一小段。"
+        return "Hi, I'm Clownfish. I'll keep you company for a short set."
+
+    def plan_chat_turn(self, prompt: str) -> ChatTurnDecision:
+        message = _extract_prompt_field(prompt, "Latest user message:")
+        intent = _fallback_chat_intent(message)
+        return ChatTurnDecision(
+            intent=intent,
+            reply_text=_mock_chat_reply(message, intent),
+        )
 
     def _build_program_items(
         self,
@@ -187,12 +225,24 @@ class MockRadioModelClient:
 
     def _select_candidates(self, agent_input: RadioAgentInput) -> list[CandidateItem]:
         target_count = self._target_track_count(agent_input)
+        recent_candidate_ids = {
+            event["candidate_id"] for event in agent_input.history if event.get("candidate_id")
+        } | set(agent_input.memory.recent_candidate_ids)
         scored_candidates = [
-            (self._score_candidate(agent_input, candidate), index, candidate)
+            (
+                self._score_candidate(agent_input, candidate),
+                _candidate_rotation_key(agent_input, candidate),
+                index,
+                candidate,
+            )
             for index, candidate in enumerate(agent_input.candidate_items)
         ]
-        scored_candidates.sort(key=lambda item: (-item[0], item[1]))
-        return [candidate for _, _, candidate in scored_candidates[:target_count]]
+        scored_candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+        fresh_scored_candidates = [
+            item for item in scored_candidates if item[3].candidate_id not in recent_candidate_ids
+        ]
+        selectable_candidates = fresh_scored_candidates or scored_candidates
+        return [candidate for _, _, _, candidate in selectable_candidates[:target_count]]
 
     def _target_track_count(self, agent_input: RadioAgentInput) -> int:
         duration = agent_input.request.user_state.duration_minutes
@@ -284,22 +334,10 @@ class MockRadioModelClient:
         agent_input: RadioAgentInput,
         selected_candidates: list[CandidateItem],
     ) -> str:
-        date_text = _format_local_date(agent_input)
-        city = _city(agent_input)
-        weather = _weather_text(agent_input)
-        station_focus = _station_focus(agent_input)
-        atmosphere = _atmosphere_text(agent_input, selected_candidates)
-        track_list = _track_list(selected_candidates)
-
-        return (
-            "Hi, I am Clownfish, your personal radio agent. "
-            f"Today is {date_text}. I am reading your city as {city}; "
-            f"the current weather is {weather}. "
-            f"For this session, I am shaping the station around {station_focus}. "
-            f"I will start with {track_list}. "
-            f"The set is meant to feel {atmosphere}, so it should give the room "
-            "a little more presence than a plain playlist."
-        )
+        del selected_candidates
+        if _prefers_chinese(_language_hint(agent_input)):
+            return "你好，我是 Clownfish。先陪你播一小段。"
+        return "Hi, I'm Clownfish. I'll keep you company for a short set."
 
     def _build_bridge(
         self,
@@ -308,13 +346,9 @@ class MockRadioModelClient:
         next_candidate: CandidateItem,
     ) -> str:
         atmosphere = _atmosphere_text(agent_input, [previous_candidate, next_candidate])
-        next_tags = _tag_text(next_candidate)
-        return (
-            f"After {previous_candidate.title}, I am moving into "
-            f"{next_candidate.title} by {next_candidate.creator}. "
-            f"This keeps the station {atmosphere}, with {next_tags} giving "
-            "the next few minutes a slightly different texture."
-        )
+        if _prefers_chinese(_language_hint(agent_input)):
+            return f"下一首换成 {next_candidate.title}，继续保持{atmosphere}。"
+        return f"Next is {next_candidate.title}; I will keep the station {atmosphere}."
 
     def _build_track_explanation(
         self,
@@ -365,24 +399,117 @@ class OpenAIResponsesRadioModelClient:
         api_key: str,
         model: str,
         base_url: str = "https://api.openai.com/v1",
+        prefer_chat_completions: bool = False,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._base_url = base_url.rstrip("/")
+        self._prefer_chat_completions = prefer_chat_completions
 
     def generate_program(self, agent_input: RadioAgentInput) -> dict[str, object]:
-        try:
-            payload = self._post_json("/responses", self._build_responses_body(agent_input))
-        except ModelRequestError as exc:
-            if not _should_try_chat_completions_fallback(exc):
-                raise
-            payload = self._post_json(
+        if self._prefer_chat_completions:
+            payload = self._post_json_with_timeout(
                 "/chat/completions",
                 self._build_chat_completions_body(agent_input),
+                timeout=PROGRAM_AGENT_TIMEOUT_SECONDS,
             )
+        else:
+            try:
+                payload = self._post_json_with_timeout(
+                    "/responses",
+                    self._build_responses_body(agent_input),
+                    timeout=PROGRAM_AGENT_TIMEOUT_SECONDS,
+                )
+            except ModelRequestError as exc:
+                if not _should_try_chat_completions_fallback(exc):
+                    raise
+                payload = self._post_json_with_timeout(
+                    "/chat/completions",
+                    self._build_chat_completions_body(agent_input),
+                    timeout=PROGRAM_AGENT_TIMEOUT_SECONDS,
+                )
 
         draft = _load_response_json(payload)
         return _complete_program_payload(draft=draft, agent_input=agent_input)
+
+    def generate_short_text(self, prompt: str) -> str:
+        body = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": 'Return only one JSON object shaped as {"text":"..."}.',
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        payload = self._post_json_with_timeout(
+            "/chat/completions",
+            body,
+            timeout=SHORT_TEXT_AGENT_TIMEOUT_SECONDS,
+        )
+        raw_text = _extract_response_text(payload)
+        try:
+            loaded = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("short text agent returned non-JSON output") from exc
+        if not isinstance(loaded, dict):
+            raise ValueError("short text agent output must be a JSON object")
+        text = loaded.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("short text agent output missing text")
+        return _shorten_text(text)
+
+    def plan_chat_turn(self, prompt: str) -> ChatTurnDecision:
+        body = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Return only one JSON object shaped as "
+                        '{"intent":"chat_only|retune_program|song_request|config_help",'
+                        '"reply_text":"..."}.'
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        payload = self._post_json_with_timeout(
+            "/chat/completions",
+            body,
+            timeout=SHORT_TEXT_AGENT_TIMEOUT_SECONDS,
+        )
+        raw_text = _extract_response_text(payload)
+        try:
+            loaded = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("chat turn agent returned non-JSON output") from exc
+        if not isinstance(loaded, dict):
+            raise ValueError("chat turn agent output must be a JSON object")
+
+        intent = loaded.get("intent")
+        reply_text = loaded.get("reply_text") or loaded.get("text")
+        if not isinstance(intent, str) or intent not in CHAT_TURN_INTENTS:
+            raise ValueError("chat turn agent output missing valid intent")
+        if not isinstance(reply_text, str) or not reply_text.strip():
+            raise ValueError("chat turn agent output missing reply_text")
+        return ChatTurnDecision(intent=intent, reply_text=_shorten_text(reply_text))
+
+    def _post_json_with_timeout(
+        self,
+        path: str,
+        body: dict[str, object],
+        timeout: int,
+    ) -> dict[str, object]:
+        try:
+            return self._post_json(path, body, timeout=timeout)
+        except TypeError as exc:
+            if "timeout" not in str(exc):
+                raise
+            return self._post_json(path, body)
 
     def _build_responses_body(self, agent_input: RadioAgentInput) -> dict[str, object]:
         return {
@@ -438,7 +565,12 @@ class OpenAIResponsesRadioModelClient:
             "response_format": {"type": "json_object"},
         }
 
-    def _post_json(self, path: str, body: dict[str, object]) -> dict[str, object]:
+    def _post_json(
+        self,
+        path: str,
+        body: dict[str, object],
+        timeout: int = 55,
+    ) -> dict[str, object]:
         request = Request(
             f"{self._base_url}{path}",
             data=json.dumps(body).encode("utf-8"),
@@ -450,7 +582,7 @@ class OpenAIResponsesRadioModelClient:
         )
 
         try:
-            with urlopen(request, timeout=120) as response:
+            with urlopen(request, timeout=timeout) as response:
                 raw_text = response.read().decode("utf-8", errors="replace")
                 try:
                     payload = json.loads(raw_text)
@@ -464,6 +596,8 @@ class OpenAIResponsesRadioModelClient:
                 f"Codex agent request failed: {exc.code} {_safe_snippet(detail)}",
                 status_code=exc.code,
             ) from exc
+        except TimeoutError as exc:
+            raise ModelRequestError("Codex agent request timed out") from exc
         except URLError as exc:
             raise ModelRequestError(f"Codex agent request failed: {exc.reason}") from exc
 
@@ -473,10 +607,142 @@ class OpenAIResponsesRadioModelClient:
         return payload
 
 
+class AnthropicRadioModelClient:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        base_url: str = "https://api.anthropic.com",
+    ) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._base_url = base_url.rstrip("/")
+
+    def generate_program(self, agent_input: RadioAgentInput) -> dict[str, object]:
+        body = {
+            "model": self._model,
+            "max_tokens": 4096,
+            "system": (
+                f"{SYSTEM_PROMPT}\n"
+                "Return only one JSON object. Do not wrap it in Markdown. "
+                "The object must contain title, summary, and blocks."
+            ),
+            "messages": [{"role": "user", "content": agent_input.prompt}],
+        }
+        payload = self._post_json(
+            "/v1/messages",
+            body,
+            timeout=PROGRAM_AGENT_TIMEOUT_SECONDS,
+        )
+        draft = _load_response_json(payload)
+        return _complete_program_payload(draft=draft, agent_input=agent_input)
+
+    def generate_short_text(self, prompt: str) -> str:
+        body = {
+            "model": self._model,
+            "max_tokens": 512,
+            "system": 'Return only one JSON object shaped as {"text":"..."}.',
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        payload = self._post_json(
+            "/v1/messages",
+            body,
+            timeout=SHORT_TEXT_AGENT_TIMEOUT_SECONDS,
+        )
+        raw_text = _extract_response_text(payload)
+        try:
+            loaded = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("short text agent returned non-JSON output") from exc
+        if not isinstance(loaded, dict):
+            raise ValueError("short text agent output must be a JSON object")
+        text = loaded.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("short text agent output missing text")
+        return _shorten_text(text)
+
+    def plan_chat_turn(self, prompt: str) -> ChatTurnDecision:
+        body = {
+            "model": self._model,
+            "max_tokens": 512,
+            "system": (
+                "Return only one JSON object shaped as "
+                '{"intent":"chat_only|retune_program|song_request|config_help",'
+                '"reply_text":"..."}.'
+            ),
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        payload = self._post_json(
+            "/v1/messages",
+            body,
+            timeout=SHORT_TEXT_AGENT_TIMEOUT_SECONDS,
+        )
+        raw_text = _extract_response_text(payload)
+        try:
+            loaded = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("chat turn agent returned non-JSON output") from exc
+        if not isinstance(loaded, dict):
+            raise ValueError("chat turn agent output must be a JSON object")
+
+        intent = loaded.get("intent")
+        reply_text = loaded.get("reply_text") or loaded.get("text")
+        if not isinstance(intent, str) or intent not in CHAT_TURN_INTENTS:
+            raise ValueError("chat turn agent output missing valid intent")
+        if not isinstance(reply_text, str) or not reply_text.strip():
+            raise ValueError("chat turn agent output missing reply_text")
+        return ChatTurnDecision(intent=intent, reply_text=_shorten_text(reply_text))
+
+    def _post_json(
+        self,
+        path: str,
+        body: dict[str, object],
+        timeout: int,
+    ) -> dict[str, object]:
+        request = Request(
+            _join_base_url(self._base_url, path),
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "x-api-key": self._api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                raw_text = response.read().decode("utf-8", errors="replace")
+                try:
+                    payload = json.loads(raw_text)
+                except json.JSONDecodeError as exc:
+                    raise ModelRequestError(
+                        f"Anthropic agent response was not JSON: {_safe_snippet(raw_text)}"
+                    ) from exc
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise ModelRequestError(
+                f"Anthropic agent request failed: {exc.code} {_safe_snippet(detail)}",
+                status_code=exc.code,
+            ) from exc
+        except TimeoutError as exc:
+            raise ModelRequestError("Anthropic agent request timed out") from exc
+        except URLError as exc:
+            raise ModelRequestError(f"Anthropic agent request failed: {exc.reason}") from exc
+
+        if not isinstance(payload, dict):
+            raise ModelRequestError("Anthropic agent response must be a JSON object")
+
+        return payload
+
+
 def _should_try_chat_completions_fallback(exc: ModelRequestError) -> bool:
     if exc.status_code in {401, 403}:
         return False
     return True
+
+
+CHAT_TURN_INTENTS = {"chat_only", "retune_program", "song_request", "config_help"}
 
 
 def _load_response_json(payload: dict[str, object]) -> dict[str, object]:
@@ -770,6 +1036,18 @@ def _extract_response_text(payload: dict[str, object]) -> str:
     if isinstance(output_text, str) and output_text.strip():
         return output_text.strip()
 
+    content = payload.get("content")
+    if isinstance(content, list):
+        chunks = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                chunks.append(text)
+        if chunks:
+            return "".join(chunks).strip()
+
     output = payload.get("output")
     if isinstance(output, list):
         chunks: list[str] = []
@@ -818,9 +1096,203 @@ def _extract_response_text(payload: dict[str, object]) -> str:
     raise ValueError("Codex agent response did not include output text")
 
 
+def _join_base_url(base_url: str, path: str) -> str:
+    normalized_base = base_url.rstrip("/")
+    if normalized_base.endswith("/v1") and path.startswith("/v1/"):
+        return f"{normalized_base}{path.removeprefix('/v1')}"
+    return f"{normalized_base}{path}"
+
+
 def _safe_snippet(text: str, limit: int = 300) -> str:
     compact = " ".join(text.split())
     return compact[:limit] if compact else "<empty response>"
+
+
+def _extract_prompt_field(prompt: str, label: str) -> str:
+    lines = prompt.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != label:
+            continue
+        for value in lines[index + 1 :]:
+            stripped = value.strip()
+            if stripped:
+                return _shorten_text(stripped, limit=120)
+        return ""
+    return ""
+
+
+def _extract_latest_user_message(prompt: str) -> str:
+    latest = ""
+    for line in prompt.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- user:"):
+            latest = stripped.removeprefix("- user:").strip()
+    return _shorten_text(latest, limit=120) if latest else ""
+
+
+def _fallback_chat_intent(message: str) -> str:
+    text = message.strip().lower()
+    if not text:
+        return "chat_only"
+    if _contains_any(
+        text,
+        [
+            "api key",
+            "apikey",
+            "配置",
+            "设置",
+            "key",
+            "netease",
+            "网易云",
+            "anthropic",
+            "fish audio",
+        ],
+    ):
+        return "config_help"
+    if _contains_any(
+        text,
+        [
+            "播放",
+            "来点",
+            "来一首",
+            "想听",
+            "推荐",
+            "歌手",
+            "这首",
+            "歌曲",
+            "music",
+            "song",
+            "artist",
+            "play ",
+            "listen to",
+            "recommend",
+        ],
+    ):
+        return "song_request"
+    if _contains_any(
+        text,
+        [
+            "换",
+            "重生成",
+            "重新生成",
+            "重新",
+            "调整",
+            "调成",
+            "更安静",
+            "更热闹",
+            "更轻松",
+            "不要播客",
+            "regenerate",
+            "retune",
+            "change",
+            "make it",
+            "no podcast",
+        ],
+    ):
+        return "retune_program"
+    return "chat_only"
+
+
+def _contains_any(text: str, values: list[str]) -> bool:
+    return any(value in text for value in values)
+
+
+def _shorten_text(text: str, limit: int = 80) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit].rstrip("，。,. ") + "..."
+
+
+def _mock_chat_reply(message: str, intent: str) -> str:
+    use_chinese = _prefers_chinese(message)
+    if use_chinese:
+        variants = {
+            "config_help": [
+                "可以，我先看配置这边。",
+                "好，我们先把设置理顺。",
+                "我在，先处理配置问题。",
+            ],
+            "song_request": [
+                "好，我按这个方向找歌。",
+                "可以，这个口味我接住了。",
+                "明白，下一段往这里靠。",
+            ],
+            "retune_program": [
+                "好，后面我换个走向。",
+                "收到，我把节奏调一下。",
+                "嗯，我让后面更贴近你。",
+            ],
+            "chat_only": [
+                "我在，先陪你听着。",
+                "嗯，我们慢慢来。",
+                "好，电台先不急着换。",
+            ],
+        }
+    else:
+        variants = {
+            "config_help": [
+                "Sure, I will check the setup first.",
+                "Let us sort the settings first.",
+                "I am here; setup first.",
+            ],
+            "song_request": [
+                "Got it, I will look in that direction.",
+                "Yes, I can lean the station that way.",
+                "I hear the taste; next set follows it.",
+            ],
+            "retune_program": [
+                "Okay, I will shift the next stretch.",
+                "Understood, I will retune the pacing.",
+                "I will move the station closer to that.",
+            ],
+            "chat_only": [
+                "I am here; we can keep listening.",
+                "Yeah, let us take it slowly.",
+                "I hear you; the station can stay gentle.",
+            ],
+        }
+    return _choose_variant(variants.get(intent) or variants["chat_only"], message or intent)
+
+
+def _choose_variant(values: list[str], seed: str) -> str:
+    if not values:
+        return ""
+    digest = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()
+    return values[int(digest[:8], 16) % len(values)]
+
+
+def _candidate_rotation_key(agent_input: RadioAgentInput, candidate: CandidateItem) -> int:
+    local_time = agent_input.context_snapshot.device_context.local_time.isoformat()
+    latest_chat = agent_input.chat_history[-1].text if agent_input.chat_history else ""
+    seed = "|".join(
+        [
+            agent_input.request.user_id,
+            local_time,
+            agent_input.request.user_state.free_text or "",
+            latest_chat,
+            candidate.candidate_id,
+        ]
+    )
+    digest = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()
+    return int(digest[:10], 16)
+
+
+def _language_hint(agent_input: RadioAgentInput) -> str:
+    values = [
+        agent_input.context_snapshot.device_context.locale or "",
+        agent_input.request.user_state.free_text or "",
+        *(message.text for message in agent_input.chat_history[-3:]),
+    ]
+    return " ".join(values)
+
+
+def _prefers_chinese(value: str) -> bool:
+    if "zh" in value.lower():
+        return True
+    chinese_count = len(re.findall(r"[\u4e00-\u9fff]", value))
+    ascii_word_count = len(re.findall(r"[A-Za-z]{2,}", value))
+    return chinese_count > 0 and chinese_count >= ascii_word_count
 
 
 def _local_datetime(agent_input: RadioAgentInput) -> datetime:
@@ -862,6 +1334,8 @@ def _city(agent_input: RadioAgentInput) -> str:
 
 def _weather_text(agent_input: RadioAgentInput) -> str:
     weather = agent_input.context_snapshot.weather
+    if weather.get("source") == "disabled":
+        return "weather unavailable"
     condition = weather.get("condition")
     condition_text = condition if isinstance(condition, str) and condition else "unknown"
     temperature = weather.get("temperature_celsius")

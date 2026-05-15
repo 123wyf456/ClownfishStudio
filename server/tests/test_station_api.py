@@ -17,6 +17,8 @@ def test_station_generate_returns_session_payload() -> None:
     assert session["program"]["title"]
     assert session["calendar_events"]
     assert session["greeting"]
+    assert session["tts_text"] is None
+    assert session["tts_audio_url"] is None
     assert payload["runtime"]["brain"]["provider"] == "mock"
 
 
@@ -36,7 +38,8 @@ def test_station_chat_returns_reply_and_session() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert "我想更安静一点" in body["reply"]["text"]
+    assert body["reply"]["text"]
+    assert len(body["reply"]["text"]) <= 36
     assert body["session"]["program"]["title"]
 
 
@@ -81,7 +84,28 @@ def test_station_api_allows_local_web_origin() -> None:
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:8081"
 
 
-def test_station_chat_regenerates_a_fresh_session() -> None:
+def test_station_chat_only_keeps_current_session() -> None:
+    client = TestClient(app)
+    payload = make_generate_payload()
+    first_response = client.post("/api/station/generate", json=payload)
+    chat_response = client.post(
+        "/api/chat",
+        json={
+            "user_id": payload["user_id"],
+            "message": "今天确实有点累",
+            "device_context": payload["device_context"],
+        },
+    )
+
+    assert first_response.status_code == 200
+    assert chat_response.status_code == 200
+    first_session_id = first_response.json()["session"]["session_id"]
+    second_session_id = chat_response.json()["session"]["session_id"]
+    assert second_session_id == first_session_id
+    assert chat_response.json()["reply"]["text"]
+
+
+def test_station_chat_regenerates_a_fresh_session_for_retune_request() -> None:
     client = TestClient(app)
     payload = make_generate_payload()
     first_response = client.post("/api/station/generate", json=payload)
@@ -118,7 +142,8 @@ def test_station_chat_first_request_creates_single_session_without_seed_roundtri
     assert response.status_code == 200
     body = response.json()
     assert body["session"]["session_id"].startswith("session-")
-    assert "安静" in body["reply"]["text"]
+    assert body["reply"]["text"]
+    assert len(body["reply"]["text"]) <= 36
 
 
 def make_generate_payload() -> dict[str, object]:

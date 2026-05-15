@@ -10,7 +10,7 @@ const DEFAULT_TASTE_MD = `# Taste Notes
 
 const DEFAULT_ROUTINES_MD = `# Routines
 
-- Keep the opening greeting short and grounded in weather, time, and the user's request.
+- Keep the opening greeting short and grounded in time and the user's request.
 - Use calm late-night phrasing when the hour is late.
 - Keep chat replies focused on the next playable set, not on explanation.
 `;
@@ -28,12 +28,12 @@ const DEFAULT_SCHEDULE = {
 
 const DEFAULT_ENVIRONMENT = {
   updatedAt: null,
-  city: "Shanghai",
+  city: "Unknown",
   weather: "",
   condition: "",
   temperature: null,
   localTime: null,
-  timezone: "Asia/Shanghai",
+  timezone: "",
 };
 
 const DEFAULT_HISTORY = {

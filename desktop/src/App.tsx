@@ -39,7 +39,6 @@ function makeMessage(role: ChatMessage["role"], text: string): ChatMessage {
 
 export function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const narrationRef = useRef<HTMLAudioElement | null>(null);
   const hasBootstrappedRef = useRef(false);
   const requestInFlightRef = useRef(false);
   const [theme, setTheme] = useState<ThemeMode>(() =>
@@ -58,8 +57,15 @@ export function App() {
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [apiError, setApiError] = useState("");
-  const [nativeNarrationText, setNativeNarrationText] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [deviceLocation, setDeviceLocation] = useState<{
+    latitude?: number;
+    longitude?: number;
+    cityHint?: string;
+  } | null>(null);
+  const [locationStatus, setLocationStatus] = useState<"idle" | "locating" | "ready" | "fallback">(
+    "idle",
+  );
 
   const station = useMemo(
     () =>
@@ -80,7 +86,6 @@ export function App() {
     setTrackIndex(0);
     setProgress(0);
     setIsPlaying(false);
-    setNativeNarrationText(remoteStation.ttsAudioUrl ? "" : (remoteStation.greeting ?? remoteStation.agentLine));
     setWarnings(nextWarnings);
   }, []);
 
@@ -102,7 +107,7 @@ export function App() {
       setApiError("");
       try {
         const response = await generateStation({
-          city: settings?.weatherCity || station.city,
+          deviceLocation,
           message,
         });
         if (response?.station) {
@@ -118,7 +123,7 @@ export function App() {
         setIsAdapting(false);
       }
     },
-    [applyRemoteStation, settings?.weatherCity, station.city],
+    [applyRemoteStation, deviceLocation],
   );
 
   const nextTrack = useCallback(() => {
@@ -161,7 +166,7 @@ export function App() {
 
       setIsAdapting(true);
       setApiError("");
-      chatStation({ city: settings.weatherCity || station.city, message: cleanText })
+      chatStation({ deviceLocation, message: cleanText })
         .then((response) => {
           if (response?.station) {
             applyRemoteStation(response.station, response.warnings ?? []);
@@ -185,7 +190,7 @@ export function App() {
           setIsAdapting(false);
         });
     },
-    [applyRemoteStation, isAdapting, settings, station.city],
+    [applyRemoteStation, deviceLocation, isAdapting, settings],
   );
 
   async function handleSaveSettings(nextSettings: ApiSettings) {
@@ -193,7 +198,6 @@ export function App() {
     setSettings(response.config);
     setRuntime(response.runtime);
     setIsSettingsOpen(false);
-    await requestAgentStation("Generate a fresh station using the configured services.");
   }
 
   const toggleTheme = useCallback(() => {
@@ -223,14 +227,48 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!settings || hasBootstrappedRef.current) {
+    if (!window.navigator?.geolocation) {
+      setLocationStatus("fallback");
+      return;
+    }
+
+    setLocationStatus("locating");
+    const fallbackTimer = window.setTimeout(() => {
+      setLocationStatus((value) => (value === "ready" ? value : "fallback"));
+    }, 8_000);
+
+    window.navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const latitude = position.coords.latitude;
+        const longitude = position.coords.longitude;
+        setDeviceLocation({ latitude, longitude });
+        setLocationStatus("ready");
+        window.clearTimeout(fallbackTimer);
+      },
+      () => {
+        setLocationStatus("fallback");
+        window.clearTimeout(fallbackTimer);
+      },
+      { enableHighAccuracy: false, timeout: 7_000, maximumAge: 10 * 60 * 1000 },
+    );
+
+    return () => window.clearTimeout(fallbackTimer);
+  }, []);
+
+  useEffect(() => {
+    if (
+      !settings ||
+      hasBootstrappedRef.current ||
+      locationStatus === "idle" ||
+      locationStatus === "locating"
+    ) {
       return;
     }
     hasBootstrappedRef.current = true;
     requestAgentStation(
-      "Open ClownfishStudio. Greet me using the current weather, time, and my listening context, then start a small personal radio set.",
+      "启动 ClownfishStudio。简单打招呼并自我介绍，然后开始此刻的电台。",
     );
-  }, [requestAgentStation, settings]);
+  }, [locationStatus, requestAgentStation, settings]);
 
   useEffect(() => {
     if (!isPlaying || currentTrack.playbackUrl) {
@@ -303,74 +341,7 @@ export function App() {
     if (audioRef.current) {
       audioRef.current.volume = volume / 100;
     }
-    if (narrationRef.current) {
-      narrationRef.current.volume = Math.min(1, volume / 100 + 0.12);
-    }
   }, [volume]);
-
-  useEffect(() => {
-    if (!station.ttsAudioUrl) {
-      return undefined;
-    }
-
-    narrationRef.current?.pause();
-    const narration = new Audio(station.ttsAudioUrl);
-    narrationRef.current = narration;
-    narration.volume = Math.min(1, volume / 100 + 0.12);
-    const finishNarration = () => setIsPlaying(true);
-    const failNarration = () => {
-      setApiError("Narration playback failed");
-      setIsPlaying(true);
-    };
-    narration.addEventListener("ended", finishNarration);
-    narration.addEventListener("error", failNarration);
-    narration.play().catch((error: unknown) => {
-      setApiError(error instanceof Error ? error.message : "Narration playback failed");
-      setIsPlaying(true);
-    });
-
-    return () => {
-      narration.pause();
-      narration.removeEventListener("ended", finishNarration);
-      narration.removeEventListener("error", failNarration);
-      if (narrationRef.current === narration) {
-        narrationRef.current = null;
-      }
-    };
-  }, [station.ttsAudioUrl]);
-
-  useEffect(() => {
-    if (!nativeNarrationText) {
-      return undefined;
-    }
-
-    const speech = window.speechSynthesis;
-    if (!speech || typeof SpeechSynthesisUtterance === "undefined") {
-      setNativeNarrationText("");
-      setIsPlaying(true);
-      return undefined;
-    }
-
-    speech.cancel();
-    const utterance = new SpeechSynthesisUtterance(nativeNarrationText);
-    utterance.rate = 0.96;
-    utterance.pitch = 0.95;
-    utterance.volume = Math.min(1, volume / 100 + 0.12);
-    utterance.lang = /[\u4e00-\u9fff]/.test(nativeNarrationText) ? "zh-CN" : "en-US";
-    utterance.onend = () => {
-      setNativeNarrationText("");
-      setIsPlaying(true);
-    };
-    utterance.onerror = () => {
-      setNativeNarrationText("");
-      setIsPlaying(true);
-    };
-    speech.speak(utterance);
-
-    return () => {
-      speech.cancel();
-    };
-  }, [nativeNarrationText]);
 
   return (
     <main className="app-stage flex h-screen w-screen items-center justify-center overflow-hidden p-3 text-ink transition-colors duration-700">

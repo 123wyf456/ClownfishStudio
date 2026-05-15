@@ -1,208 +1,85 @@
-# ClownfishStudio Architecture
-
-## 1. 目标
-
-ClownfishStudio 不是传统播放器，也不是“规则推荐 + LLM 文案”。
-
-它的目标是：
-
-> 让本地 Agent 像电台导演一样，基于用户此刻的状态、天气、日程和可播放内容，实时编排一档个人电台节目。
-
-## 2. 分层
-
-### 交互层
-
-`mobile/`
-
-三个核心界面：
-
-- `Radio`
-  输入此刻状态，发起电台生成。
-- `Player`
-  展示当前内容、队列、反馈按钮和串场文案。
-- `Chat`
-  和电台对话，影响后续重新生成与节目氛围。
-
-### 本地调度层
-
-`server/app/api` + `server/app/services`
-
-职责：
-
-- 采集移动端请求
-- 汇总设备上下文
-- 调用天气、日程、音乐、记忆、历史工具
-- 调用 Agent 大脑生成节目
-- 维护 `session / chat / now playing` 状态
-- 暴露统一 HTTP 接口给前端
-
-### Agent 大脑层
-
-`server/app/agents`
-
-职责：
-
-- 组装 prompt
-- 调用模型
-- 要求模型只从候选内容中选择
-- 对结构化输出做 schema 校验
-- 拒绝编造歌曲、播客和播放地址
-
-### Provider / Tool 层
-
-`server/app/services/providers.py`
-`server/app/tools/*`
-
-职责：
-
-- `brain`: DeepSeek / mock
-- `tts`: Fish Audio / mock
-- `calendar`: 飞书 / mock
-- `weather`: OpenWeather / mock
-- `music`: 网易云 / mock
-
-关键原则：
-
-- provider 负责能力接入
-- tool 负责事实与候选内容
-- agent 负责理解与编排
-
-## 3. 主流程
-
-### 生成电台
-
-1. 移动端调用 `POST /api/station/generate`
-2. 服务端读取 `device_context + user_state`
-3. 调用天气 provider
-4. 调用日程 provider
-5. 读取用户记忆和历史
-6. 拉取音乐 / 播客候选
-7. 生成 `ContextSnapshot`
-8. 调用 `RadioAgentRuntime`
-9. Agent 输出 `RadioProgram`
-10. TTS provider 为 greeting 生成语音地址
-11. 保存 `StationSession`
-12. 返回 `session + runtime status`
-
-### 聊天
-
-1. 移动端调用 `POST /api/chat`
-2. 服务端读取当前 session
-3. 记录 user message
-4. 返回一条 agent reply
-5. 后续可以把 chat history 纳入下一次 regenerate prompt
-
-### 播放器状态
-
-1. 移动端调用 `GET /api/player/{user_id}/now`
-2. 服务端从 session store 取最近电台
-3. 返回当前 item、queue、runtime status
-
-## 4. 数据契约
-
-核心 schema：
-
-- `GenerateProgramRequest`
-- `ContextSnapshot`
-- `CalendarEvent`
-- `RadioProgram`
-- `StationSession`
-- `StationGenerateResponse`
-- `StationChatRequest`
-- `StationChatResponse`
-- `PlayerNowResponse`
-- `RuntimeStatus`
-
-## 5. 真实接线点
-
-### DeepSeek
-
-配置：
-
-- `RADIO_AGENT_PROVIDER=deepseek`
-- `DEEPSEEK_API_KEY`
-- `DEEPSEEK_BASE_URL`
-- `DEEPSEEK_MODEL`
-
-落点：
-
-- `server/app/agents/runtime.py`
-- `server/app/services/providers.py`
-
-### Fish Audio
-
-配置：
-
-- `TTS_PROVIDER=fish_audio`
-- `FISH_AUDIO_API_KEY`
-- `FISH_AUDIO_BASE_URL`
-- `FISH_AUDIO_VOICE_ID`
-
-落点：
-
-- `server/app/services/providers.py`
-
-当前状态：
-
-- 已有 mock provider
-- 真实 HTTP 接线待实现
-
-### 飞书日程
-
-配置：
-
-- `CALENDAR_PROVIDER=feishu`
-- `FEISHU_APP_ID`
-- `FEISHU_APP_SECRET`
-- `FEISHU_CALENDAR_ID`
-
-落点：
-
-- `server/app/services/providers.py`
-
-当前状态：
-
-- 已经纳入 `calendar_events`
-- 当前返回 mock events
-
-### OpenWeather
-
-配置：
-
-- `WEATHER_PROVIDER=openweather`
-- `OPENWEATHER_API_KEY`
-- `OPENWEATHER_BASE_URL`
-
-落点：
-
-- `server/app/services/providers.py`
-
-当前状态：
-
-- 当前仍走 `server/app/tools/weather_tool.py` mock
-
-### 网易云
-
-配置：
-
-- `NETEASE_API_BASE_URL`
-- `NETEASE_COOKIE`
-- `NETEASE_PLAYBACK_LEVEL`
-
-落点：
-
-- `server/app/tools/netease_music_tool.py`
-
-当前状态：
-
-- 已支持真实搜索和播放 URL 拉取
-- 若不可用会回退 mock candidates
-
-## 6. 为什么这样拆
-
-这样拆的好处是：
-
-- 前端可以稳定围绕 session 工作，不直接感知底层 provider 细节
-- 真实 API 权限没到时，mock 流程也能完整跑通
-- 拿到 API 权限后，我们只需要替换 provider，不需要再改主流程
-- Agent 仍然处在决策中心，没有退化成文案润色器
+# ClownfishStudio 架构概览
+
+ClownfishStudio 当前实现是一个桌面端 AI 电台：Electron + React 负责交互和播放，本地 FastAPI 后端负责 Agent 运行、工具编排、会话持久化和外部服务接入。
+
+核心原则：
+
+```text
+Agent 是推荐大脑
+工具提供事实和候选内容
+服务层负责流程编排
+客户端只负责交互、播放和本地桥接
+```
+
+## 分层总览
+
+| 层级 | 主要目录 | 职责边界 |
+| --- | --- | --- |
+| 桌面 UI 层 | `desktop/src` | 展示 Radio、Player、Chat、Settings；采集时间、定位等设备上下文；发起生成、聊天、配置请求；不直接调用模型。 |
+| Electron 桥接层 | `desktop/electron` | 创建窗口；生产环境启动本地后端；通过 `preload` 暴露 `window.clownfishApi`；管理 IPC、本地配置、音频缓存和桌面日志。 |
+| FastAPI API 层 | `server/app/api` | 提供 `/api/station/generate`、`/api/chat`、`/api/config`、`/api/feedback`、`/health` 等接口；只做请求响应和 schema 边界。 |
+| 服务编排层 | `server/app/services` | `StationOrchestrator` 管电台会话、问候、TTS、播放状态；`ProgramGenerationService` 汇总天气、时间、记忆、历史和候选内容。 |
+| Agent 层 | `server/app/agents` | `RadioAgentRuntime` 调用 DeepSeek 或 mock 模型，生成节目、问候和聊天回复；`SongRequestPlanner` 理解用户点歌意图；输出必须通过 schema 校验。 |
+| 工具与 Provider 层 | `server/app/tools`, `server/app/services/providers.py` | 读取天气、记忆、历史、网易云候选、播客候选、反馈、日历和 TTS；只返回事实和候选，不承担推荐主判断。 |
+| 数据与外部服务层 | `server/app/db`, `data/mock`, runtime 目录 | SQLite 保存 session、chat history、current item；mock JSON 提供开发数据；外部接入 DeepSeek、OpenWeather、网易云音乐 API、Fish Audio。 |
+
+> 目前仓库的可运行客户端是 `desktop/`。如果后续加入 `mobile/`，它应并列在客户端层，通过同一套后端 API 使用 Agent，不应直接访问模型或密钥。
+
+## 核心链路
+
+### 启动与生成电台
+
+1. Electron 主进程启动窗口；打包环境下会启动本地 FastAPI 后端并检查 `/health`。
+2. React UI 通过 `window.clownfishApi.generateStation()` 发起生成请求。
+3. Electron 桥接层构造 `device_context`，包含本地时间、时区、语言、城市 hint、经纬度。
+4. FastAPI `/api/station/generate` 调用 `StationOrchestrator`。
+5. `ProgramGenerationService` 拉取天气、日历、用户记忆、历史记录、网易云和 mock 候选。
+6. `RadioAgentRuntime` 将上下文和候选交给 Agent，由 Agent 生成 `RadioProgram`。
+7. 后端校验 Agent 输出，确保节目项只能引用候选列表中的内容。
+8. `StationOrchestrator` 再让 Agent 生成首句问候，调用 TTS，保存 session 到 SQLite。
+9. Electron 桥接层规范化返回数据和音频 URL，UI 展示并播放。
+
+### 聊天调整电台
+
+1. 用户在 Chat 输入需求，例如“想听安静一点，不要播客”。
+2. 桥接层调用 `/api/chat`，同时带上新的设备上下文。
+3. 后端保存用户消息并读取 chat history。
+4. `ProgramGenerationService` 使用用户消息作为新的 `free_text` 重新收集候选。
+5. Agent 负责理解用户意图、重新编排节目，并生成简短回复。
+6. 新 session、回复和历史记录写入 SQLite 后返回客户端。
+
+### 播放状态
+
+1. UI 使用 session 中的节目块和曲目队列播放。
+2. `/api/player/{user_id}/now` 可返回当前 session、队列和 current item。
+3. current item 持久化在 SQLite，避免进程重启后完全丢失播放上下文。
+
+## 边界原则
+
+- 客户端不保存模型密钥，不直接访问 DeepSeek、OpenAI、网易云、OpenWeather 或 Fish Audio。
+- API 路由不堆业务逻辑，只调用 service。
+- service 可以编排流程、做日志、做兜底和持久化，但不应把推荐写成固定规则系统。
+- tools 和 providers 只提供事实、候选、缓存和外部能力。
+- Agent 负责场景理解、推荐方向判断、节目结构、串场文案和聊天回复。
+- Agent 不能编造歌曲、播客或播放链接，只能选择工具返回的候选内容。
+- 所有 Agent 输出必须经过 Pydantic schema 校验。
+
+## 关键文件索引
+
+- `desktop/src/App.tsx`：桌面 UI 主入口。
+- `desktop/electron/main.cjs`：窗口、后端进程、IPC 和日志。
+- `desktop/electron/api-clients.cjs`：桌面端到 FastAPI 的桥接、设备上下文和音频缓存。
+- `desktop/electron/preload.cjs`：向 renderer 暴露安全 API。
+- `server/app/main.py`：FastAPI app、路由和静态音频目录。
+- `server/app/api/station.py`：电台生成、聊天、播放状态接口。
+- `server/app/services/station_orchestrator.py`：电台 session、问候、TTS、聊天流程。
+- `server/app/services/program_generation.py`：上下文、候选收集和节目生成编排。
+- `server/app/agents/runtime.py`：Agent Runtime、模型选择、输出校验。
+- `server/app/agents/radio_agent.py`：模型客户端，包含 DeepSeek/OpenAI-compatible 调用和 mock 模式。
+- `server/app/services/session_store.py`：SQLite session、chat history、current item 存储。
+- `server/app/schemas/radio.py`：后端核心 Pydantic schema。
+- `server/app/tools/*`：天气、记忆、历史、音乐、播客、反馈等工具。
+
+## 架构图
+
+根目录下的 `project-architecture.svg` 展示了当前项目每一层的功能边界和主要数据流。

@@ -17,8 +17,8 @@ CONFIG_KEY_ORDER = [
     "RADIO_AGENT_MODEL",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
-    "DEEPSEEK_API_KEY",
-    "DEEPSEEK_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
     "TTS_PROVIDER",
     "FISH_AUDIO_API_KEY",
     "FISH_AUDIO_BASE_URL",
@@ -33,6 +33,9 @@ CONFIG_KEY_ORDER = [
     "NETEASE_API_BASE_URL",
     "NETEASE_COOKIE",
     "NETEASE_PLAYBACK_LEVEL",
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_BASE_URL",
+    "DEEPSEEK_MODEL",
 ]
 
 
@@ -41,13 +44,11 @@ def get_desktop_config() -> DesktopConfigResponse:
     runtime = build_runtime_status(settings)
     config = DesktopConfigValue(
         radio_agent_provider=settings.radio_agent_provider,
-        radio_agent_model=settings.deepseek_model
-        if settings.radio_agent_provider == "deepseek"
-        else settings.radio_agent_model,
+        radio_agent_model=settings.radio_agent_model,
         openai_api_key=settings.openai_api_key,
         openai_base_url=settings.openai_base_url,
-        deepseek_api_key=settings.deepseek_api_key,
-        deepseek_base_url=settings.deepseek_base_url,
+        anthropic_api_key=settings.anthropic_api_key,
+        anthropic_base_url=settings.anthropic_base_url,
         tts_provider=settings.tts_provider,
         fish_audio_api_key=settings.fish_audio_api_key,
         fish_audio_base_url=settings.fish_audio_base_url,
@@ -56,8 +57,8 @@ def get_desktop_config() -> DesktopConfigResponse:
         feishu_app_id=settings.feishu_app_id,
         feishu_app_secret=settings.feishu_app_secret,
         feishu_calendar_id=settings.feishu_calendar_id,
-        weather_provider=settings.weather_provider,
-        openweather_api_key=settings.openweather_api_key,
+        weather_provider="disabled",
+        openweather_api_key=None,
         openweather_base_url=settings.openweather_base_url,
         netease_api_base_url=settings.netease_api_base_url,
         netease_cookie=settings.netease_cookie,
@@ -99,8 +100,8 @@ def update_desktop_config(payload: DesktopConfigUpdateRequest) -> DesktopConfigR
             ("RADIO_AGENT_MODEL", payload.radio_agent_model),
             ("OPENAI_API_KEY", payload.openai_api_key),
             ("OPENAI_BASE_URL", payload.openai_base_url),
-            ("DEEPSEEK_API_KEY", payload.deepseek_api_key),
-            ("DEEPSEEK_BASE_URL", payload.deepseek_base_url),
+            ("ANTHROPIC_API_KEY", payload.anthropic_api_key),
+            ("ANTHROPIC_BASE_URL", payload.anthropic_base_url),
             ("TTS_PROVIDER", payload.tts_provider),
             ("FISH_AUDIO_API_KEY", payload.fish_audio_api_key),
             ("FISH_AUDIO_BASE_URL", payload.fish_audio_base_url),
@@ -109,12 +110,15 @@ def update_desktop_config(payload: DesktopConfigUpdateRequest) -> DesktopConfigR
             ("FEISHU_APP_ID", payload.feishu_app_id),
             ("FEISHU_APP_SECRET", payload.feishu_app_secret),
             ("FEISHU_CALENDAR_ID", payload.feishu_calendar_id),
-            ("WEATHER_PROVIDER", payload.weather_provider),
-            ("OPENWEATHER_API_KEY", payload.openweather_api_key),
+            ("WEATHER_PROVIDER", "disabled"),
+            ("OPENWEATHER_API_KEY", None),
             ("OPENWEATHER_BASE_URL", payload.openweather_base_url),
             ("NETEASE_API_BASE_URL", payload.netease_api_base_url),
             ("NETEASE_COOKIE", payload.netease_cookie),
             ("NETEASE_PLAYBACK_LEVEL", payload.netease_playback_level),
+            ("DEEPSEEK_API_KEY", None),
+            ("DEEPSEEK_BASE_URL", None),
+            ("DEEPSEEK_MODEL", None),
         ]
     )
     _write_env_values(updated_values)

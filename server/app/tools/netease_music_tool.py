@@ -24,6 +24,7 @@ from app.schemas import (
 PREFERENCE_CACHE_TTL_SECONDS = 15 * 60
 NETEASE_RESPONSE_CACHE_TTL_SECONDS = 24 * 60 * 60
 NETEASE_CACHE_DIR = RUNTIME_ROOT / "cache" / "netease"
+NETEASE_UNCACHED_PATHS = {"/search", "/song/url/v1"}
 
 
 class NeteaseMusicToolError(RuntimeError):
@@ -1082,9 +1083,11 @@ def _get_json(
         params=params,
         cookie=cookie,
     )
-    cached_payload = _read_cached_json_response(cache_key)
-    if cached_payload is not None:
-        return cached_payload
+    use_cache = path not in NETEASE_UNCACHED_PATHS
+    if use_cache:
+        cached_payload = _read_cached_json_response(cache_key)
+        if cached_payload is not None:
+            return cached_payload
 
     headers = {"Accept": "application/json"}
     if cookie:
@@ -1107,7 +1110,8 @@ def _get_json(
         if not isinstance(payload, dict):
             raise NeteaseMusicToolError("NetEase API returned non-object JSON")
 
-        _write_cached_json_response(cache_key, payload)
+        if use_cache:
+            _write_cached_json_response(cache_key, payload)
         return payload
 
     raise NeteaseMusicToolError(f"NetEase API failed: {last_network_error}") from last_network_error

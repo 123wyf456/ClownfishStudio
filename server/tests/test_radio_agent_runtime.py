@@ -5,11 +5,13 @@ import pytest
 
 from app.agents import (
     AgentOutputValidationError,
+    AnthropicRadioModelClient,
     OpenAIResponsesRadioModelClient,
     RadioAgentInput,
     RadioAgentRuntime,
 )
 from app.schemas import (
+    ChatMessage,
     ContentType,
     DeviceContext,
     GenerateProgramRequest,
@@ -53,7 +55,7 @@ def test_runtime_generates_program_from_tool_candidates() -> None:
     assert "podcast-1" not in selected_candidate_ids
 
 
-def test_mock_agent_writes_contextual_narration_and_track_explanations() -> None:
+def test_mock_agent_writes_concise_narration_and_track_explanations() -> None:
     request = make_request()
     candidate_items = search_music_candidates(limit=4) + search_podcast_candidates(limit=2)
     runtime = RadioAgentRuntime()
@@ -84,9 +86,9 @@ def test_mock_agent_writes_contextual_narration_and_track_explanations() -> None
     assert opening.item_type is ProgramItemType.narration
     assert opening.narration_text is not None
     assert "Clownfish" in opening.narration_text
-    assert "Shanghai" in opening.narration_text
-    assert "cloudy" in opening.narration_text
-    assert playable_items[0].title in opening.narration_text
+    assert len(opening.narration_text) <= 80
+    assert "Shanghai" not in opening.narration_text
+    assert playable_items[0].title not in opening.narration_text
     assert bridge_items
     assert all(item.explanation for item in playable_items)
 
@@ -135,6 +137,7 @@ def test_openai_client_uses_structured_outputs_and_server_owned_fields() -> None
         memory=get_user_music_memory("demo-user"),
         history=[],
         candidate_items=candidate_items,
+        chat_history=[ChatMessage(role="user", text="想听更安静一点")],
     )
 
     assert model_client.path == "/responses"
@@ -145,6 +148,32 @@ def test_openai_client_uses_structured_outputs_and_server_owned_fields() -> None
     assert text_format["schema"]["required"] == ["title", "summary", "blocks"]
     assert program.program_id.startswith("program-")
     assert program.context_snapshot.device_context.city_hint == "Shanghai"
+    assert program.blocks[0].items[1].candidate_id == candidate_items[0].candidate_id
+    user_prompt = model_client.body["input"][1]["content"][0]["text"]
+    assert "Recent chat history:" in user_prompt
+    assert "想听更安静一点" in user_prompt
+
+
+def test_anthropic_client_uses_messages_api_and_server_owned_fields() -> None:
+    candidate_items = search_music_candidates(limit=1)
+    model_client = CapturingAnthropicModelClient()
+    runtime = RadioAgentRuntime(model_client=model_client)
+
+    program = runtime.generate_program(
+        request=make_request(),
+        weather=get_weather("Shanghai"),
+        calendar_events=[],
+        memory=get_user_music_memory("demo-user"),
+        history=[],
+        candidate_items=candidate_items,
+    )
+
+    assert model_client.path == "/v1/messages"
+    assert model_client.body is not None
+    assert model_client.body["model"] == "claude-test"
+    assert model_client.body["messages"][0]["role"] == "user"
+    assert "Return only one JSON object" in model_client.body["system"]
+    assert program.program_id.startswith("program-")
     assert program.blocks[0].items[1].candidate_id == candidate_items[0].candidate_id
 
 
@@ -162,7 +191,7 @@ def test_runtime_normalizes_flat_model_items_into_program_blocks() -> None:
     )
 
     assert len(program.blocks) == 1
-    assert program.blocks[0].title == "Deepseek Flat Draft"
+    assert program.blocks[0].title == "Flat Draft"
     assert [item.item_type for item in program.blocks[0].items] == [
         ProgramItemType.narration,
         ProgramItemType.music,
@@ -263,7 +292,7 @@ class FlatItemsOpenAIModelClient(OpenAIResponsesRadioModelClient):
         return {
             "output_text": json.dumps(
                 {
-                    "title": "Deepseek Flat Draft",
+                    "title": "Flat Draft",
                     "summary": "A flat item list returned by the live model.",
                     "blocks": [
                         {
@@ -287,6 +316,70 @@ class FlatItemsOpenAIModelClient(OpenAIResponsesRadioModelClient):
                     ],
                 }
             )
+        }
+
+
+class CapturingAnthropicModelClient(AnthropicRadioModelClient):
+    def __init__(self) -> None:
+        super().__init__(api_key="test-key", model="claude-test")
+        self.path: str | None = None
+        self.body: dict[str, object] | None = None
+
+    def _post_json(
+        self,
+        path: str,
+        body: dict[str, object],
+        timeout: int,
+    ) -> dict[str, object]:
+        del timeout
+        self.path = path
+        self.body = body
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "title": "Anthropic Hosted Radio",
+                            "summary": "An Anthropic-generated hosted radio draft.",
+                            "blocks": [
+                                {
+                                    "block_id": "block-0",
+                                    "title": "Opening Set",
+                                    "summary": "A hosted opening and one track.",
+                                    "position": 0,
+                                    "items": [
+                                        {
+                                            "item_id": "item-0",
+                                            "item_type": ProgramItemType.narration.value,
+                                            "title": "Opening",
+                                            "creator": None,
+                                            "position": 0,
+                                            "candidate_id": None,
+                                            "playback_url": None,
+                                            "duration_seconds": None,
+                                            "narration_text": "Hi, I am Clownfish.",
+                                            "explanation": None,
+                                        },
+                                        {
+                                            "item_id": "item-1",
+                                            "item_type": ContentType.music.value,
+                                            "title": "Model Pick",
+                                            "creator": "Model Artist",
+                                            "position": 1,
+                                            "candidate_id": "music-1",
+                                            "playback_url": None,
+                                            "duration_seconds": None,
+                                            "narration_text": None,
+                                            "explanation": "Chosen for the current context.",
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                    ),
+                }
+            ]
         }
 
 

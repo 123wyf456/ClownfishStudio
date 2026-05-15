@@ -1,3 +1,5 @@
+import logging
+
 from app.schemas import CandidateItem, ContentType
 from app.tools.mock_data import read_mock_json
 from app.tools.netease_music_tool import (
@@ -6,6 +8,8 @@ from app.tools.netease_music_tool import (
     search_netease_music_candidates,
 )
 
+LOGGER = logging.getLogger(__name__)
+
 
 def search_music_candidates(
     query: str | None = None,
@@ -13,10 +17,23 @@ def search_music_candidates(
     limit: int = 10,
 ) -> list[CandidateItem]:
     if is_netease_music_enabled():
-        netease_query = query or " ".join(tags or [])
-        try:
-            candidates = search_netease_music_candidates(query=netease_query, limit=limit)
-        except NeteaseMusicToolError:
+        netease_query = _netease_search_query(query=query, tags=tags)
+        if netease_query:
+            LOGGER.info(
+                "netease_music_search query=%s limit=%s",
+                netease_query,
+                limit,
+            )
+            try:
+                candidates = search_netease_music_candidates(query=netease_query, limit=limit)
+            except NeteaseMusicToolError as exc:
+                LOGGER.warning(
+                    "netease_music_search_failed query=%s error=%s",
+                    netease_query,
+                    exc,
+                )
+                candidates = []
+        else:
             candidates = []
 
         if candidates:
@@ -61,3 +78,17 @@ def _filter_candidates(
 
 def _candidate_search_text(candidate: CandidateItem) -> str:
     return " ".join([candidate.title, candidate.creator, *candidate.tags]).lower()
+
+
+def _netease_search_query(query: str | None, tags: list[str] | None) -> str | None:
+    if query and query.strip():
+        return query.strip()
+
+    ignored_tags = {"companionship", "unknown", "weather unavailable", "unavailable"}
+    usable_tags = [
+        tag.strip()
+        for tag in tags or []
+        if tag.strip() and tag.strip().lower() not in ignored_tags
+    ]
+    joined = " ".join(usable_tags[:2]).strip()
+    return joined or None

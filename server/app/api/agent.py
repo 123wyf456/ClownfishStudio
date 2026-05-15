@@ -12,21 +12,17 @@ def agent_status() -> dict[str, str | bool]:
     settings = get_settings()
     runtime = build_runtime_status()
     live_key_configured = (
-        bool(settings.deepseek_api_key)
-        if settings.radio_agent_provider == "deepseek"
+        bool(settings.anthropic_api_key)
+        if settings.radio_agent_provider == "anthropic"
         else bool(settings.openai_api_key)
     )
     active_mode = settings.radio_agent_provider if runtime.brain.configured else "not_configured"
     return {
         "provider": settings.radio_agent_provider,
-        "model": (
-            settings.deepseek_model
-            if settings.radio_agent_provider == "deepseek"
-            else settings.radio_agent_model
-        ),
+        "model": settings.radio_agent_model,
         "openai_configured": live_key_configured,
         "active_mode": active_mode,
-        "uses_model": active_mode in {"codex", "openai", "deepseek"},
+        "uses_model": active_mode in {"openai", "anthropic"},
         "configuration_issue": (
             "model API key is missing"
             if settings.radio_agent_provider != "mock" and not runtime.brain.configured

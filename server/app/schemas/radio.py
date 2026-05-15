@@ -239,8 +239,8 @@ class DesktopConfigValue(StrictSchema):
     radio_agent_model: str
     openai_api_key: str | None = None
     openai_base_url: str
-    deepseek_api_key: str | None = None
-    deepseek_base_url: str
+    anthropic_api_key: str | None = None
+    anthropic_base_url: str
     tts_provider: str
     fish_audio_api_key: str | None = None
     fish_audio_base_url: str
@@ -268,8 +268,8 @@ class DesktopConfigUpdateRequest(StrictSchema):
     radio_agent_model: str
     openai_api_key: str | None = None
     openai_base_url: str = Field(default="https://api.openai.com/v1")
-    deepseek_api_key: str | None = None
-    deepseek_base_url: str
+    anthropic_api_key: str | None = None
+    anthropic_base_url: str = Field(default="https://api.anthropic.com")
     tts_provider: str
     fish_audio_api_key: str | None = None
     fish_audio_base_url: str

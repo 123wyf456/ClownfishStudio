@@ -2,7 +2,7 @@ import type { Station } from "@/radioData";
 
 export type ApiSettings = {
   serverBaseUrl: string;
-  agentProvider: "mock" | "openai" | "deepseek";
+  agentProvider: "mock" | "openai" | "anthropic";
   agentModel: string;
   agentApiKey: string;
   agentBaseUrl: string;
@@ -15,6 +15,12 @@ export type ApiSettings = {
   fishAudioApiKey: string;
   fishAudioBaseUrl: string;
   fishAudioVoiceId: string;
+};
+
+export type DeviceLocation = {
+  latitude?: number;
+  longitude?: number;
+  cityHint?: string;
 };
 
 export type RuntimeItem = {
@@ -44,12 +50,12 @@ export type GenerateStationResponse = {
 export const defaultSettings: ApiSettings = {
   serverBaseUrl: "http://127.0.0.1:8000",
   agentProvider: "mock",
-  agentModel: "deepseek-chat",
+  agentModel: "gpt-4o-mini",
   agentApiKey: "",
-  agentBaseUrl: "https://api.deepseek.com",
+  agentBaseUrl: "https://api.openai.com/v1",
   openweatherApiKey: "",
   openweatherBaseUrl: "https://api.openweathermap.org",
-  weatherCity: "Shanghai",
+  weatherCity: "",
   neteaseApiBaseUrl: "http://localhost:3000",
   neteaseCookie: "",
   neteasePlaybackLevel: "standard",

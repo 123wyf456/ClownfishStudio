@@ -9,15 +9,23 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from app.core.config import RUNTIME_ROOT, Settings, get_settings
-from app.schemas import CalendarEvent, IntegrationStatus, MusicHealthResponse, RuntimeStatus
-from app.tools import get_weather
+from app.schemas import (
+    CalendarEvent,
+    DeviceContext,
+    IntegrationStatus,
+    MusicHealthResponse,
+    RuntimeStatus,
+)
 from app.tools.netease_music_tool import get_netease_music_health, is_netease_music_enabled
 
 AUDIO_OUTPUT_DIR = RUNTIME_ROOT / "generated_audio"
 
 
 class WeatherProvider(Protocol):
-    def get_weather(self, city_hint: str | None) -> dict[str, str | int | float | bool | None]:
+    def get_weather(
+        self,
+        device_context: DeviceContext | str | None,
+    ) -> dict[str, str | int | float | bool | None]:
         """Return weather facts for the current session."""
 
 
@@ -31,9 +39,22 @@ class TtsProvider(Protocol):
         """Return audio url plus normalized text."""
 
 
-class MockWeatherProvider:
-    def get_weather(self, city_hint: str | None) -> dict[str, str | int | float | bool | None]:
-        return get_weather(city_hint)
+WEATHER_DISABLED_SNAPSHOT: dict[str, str | int | float | bool | None] = {
+    "city": "Unknown",
+    "condition": "unknown",
+    "temperature_celsius": None,
+    "humidity": None,
+    "source": "disabled",
+}
+
+
+class DisabledWeatherProvider:
+    def get_weather(
+        self,
+        device_context: DeviceContext | str | None,
+    ) -> dict[str, str | int | float | bool | None]:
+        del device_context
+        return dict(WEATHER_DISABLED_SNAPSHOT)
 
 
 class MockCalendarProvider:
@@ -68,21 +89,28 @@ class MockTtsProvider:
 class OpenWeatherProvider:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._fallback = MockWeatherProvider()
+        self._fallback = DisabledWeatherProvider()
 
-    def get_weather(self, city_hint: str | None) -> dict[str, str | int | float | bool | None]:
+    def get_weather(
+        self,
+        device_context: DeviceContext | str | None,
+    ) -> dict[str, str | int | float | bool | None]:
+        context = _normalize_weather_context(device_context)
         if not self._settings.openweather_api_key:
-            return self._fallback.get_weather(city_hint)
+            return self._fallback.get_weather(device_context)
 
         params = {
             "appid": self._settings.openweather_api_key,
             "units": "metric",
         }
-        normalized_city = city_hint.strip() if city_hint else ""
-        if normalized_city:
+        normalized_city = context["city_hint"]
+        if context["latitude"] is not None and context["longitude"] is not None:
+            params["lat"] = str(context["latitude"])
+            params["lon"] = str(context["longitude"])
+        elif normalized_city:
             params["q"] = normalized_city
         else:
-            params["q"] = "Shanghai"
+            return self._fallback.get_weather(device_context)
 
         url = (
             f"{self._settings.openweather_base_url.rstrip('/')}/data/2.5/weather?"
@@ -94,10 +122,10 @@ class OpenWeatherProvider:
             with urlopen(request, timeout=15) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
-            return self._fallback.get_weather(city_hint)
+            return self._fallback.get_weather(device_context)
 
         if not isinstance(payload, dict):
-            return self._fallback.get_weather(city_hint)
+            return self._fallback.get_weather(device_context)
 
         weather_items = payload.get("weather")
         main = payload.get("main")
@@ -107,7 +135,7 @@ class OpenWeatherProvider:
         humidity = main.get("humidity") if isinstance(main, dict) else None
         temperature = main.get("temp") if isinstance(main, dict) else None
         normalized_result_city = (
-            city if isinstance(city, str) and city.strip() else normalized_city or "Shanghai"
+            city if isinstance(city, str) and city.strip() else normalized_city or "Unknown"
         )
 
         return {
@@ -176,7 +204,7 @@ def build_runtime_status(settings: Settings | None = None) -> RuntimeStatus:
     brain_configured = _is_brain_configured(active_settings)
     tts_provider = active_settings.tts_provider
     calendar_provider = active_settings.calendar_provider
-    weather_provider = active_settings.weather_provider
+    weather_provider = "disabled"
 
     return RuntimeStatus(
         app_name=active_settings.app_name,
@@ -207,11 +235,9 @@ def build_runtime_status(settings: Settings | None = None) -> RuntimeStatus:
         ),
         weather=IntegrationStatus(
             provider=weather_provider,
-            configured=weather_provider == "mock" or bool(active_settings.openweather_api_key),
-            mode="live"
-            if weather_provider == "openweather" and active_settings.openweather_api_key
-            else "mock",
-            detail=active_settings.openweather_base_url,
+            configured=False,
+            mode="disabled",
+            detail="Weather lookup is temporarily disabled.",
         ),
         music=IntegrationStatus(
             provider="netease_cloud_music",
@@ -228,13 +254,8 @@ def build_music_health(settings: Settings | None = None) -> MusicHealthResponse:
 
 
 def build_weather_provider(settings: Settings | None = None) -> WeatherProvider:
-    active_settings = settings or get_settings()
-    if (
-        active_settings.weather_provider == "openweather"
-        and active_settings.openweather_api_key
-    ):
-        return OpenWeatherProvider(active_settings)
-    return MockWeatherProvider()
+    del settings
+    return DisabledWeatherProvider()
 
 
 def build_calendar_provider(settings: Settings | None = None) -> CalendarProvider:
@@ -252,8 +273,8 @@ def build_tts_provider(settings: Settings | None = None) -> TtsProvider:
 def _is_brain_configured(settings: Settings) -> bool:
     if settings.radio_agent_provider == "mock":
         return True
-    if settings.radio_agent_provider == "deepseek":
-        return bool(settings.deepseek_api_key)
+    if settings.radio_agent_provider == "anthropic":
+        return bool(settings.anthropic_api_key)
     return bool(settings.openai_api_key)
 
 
@@ -262,3 +283,22 @@ def _build_fish_audio_tts_endpoint(base_url: str) -> str:
     if normalized.lower().endswith("/v1/tts"):
         return normalized
     return f"{normalized}/v1/tts"
+
+
+def _normalize_weather_context(
+    device_context: DeviceContext | str | None,
+) -> dict[str, str | float | None]:
+    if isinstance(device_context, DeviceContext):
+        city_hint = device_context.city_hint.strip() if device_context.city_hint else ""
+        return {
+            "city_hint": city_hint,
+            "latitude": device_context.latitude,
+            "longitude": device_context.longitude,
+        }
+
+    city_hint = device_context.strip() if isinstance(device_context, str) else ""
+    return {
+        "city_hint": city_hint,
+        "latitude": None,
+        "longitude": None,
+    }

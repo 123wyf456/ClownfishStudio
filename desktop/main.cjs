@@ -18,7 +18,7 @@ const SERVER_HOST = "127.0.0.1";
 function writeLog(message, detail) {
   try {
     if (!logFile) {
-      const baseDir = resolveDesktopRuntimeRoot();
+      const baseDir = app.isPackaged ? app.getPath("userData") : __dirname;
       fs.mkdirSync(baseDir, { recursive: true });
       logFile = path.join(baseDir, "clownfish-desktop.log");
     }
@@ -80,7 +80,7 @@ async function startBundledServer() {
     return;
   }
 
-  const runtimeRoot = path.join(resolveDesktopRuntimeRoot(), "server-runtime");
+  const runtimeRoot = path.join(app.getPath("userData"), "server-runtime");
   fs.mkdirSync(runtimeRoot, { recursive: true });
 
   writeLog("server:start", {
@@ -154,51 +154,6 @@ function resolveBundledServerPaths() {
     pythonPath,
     serverWorkdir,
   };
-}
-
-function resolveDesktopRuntimeRoot() {
-  const configuredRoot = process.env.CLOWNFISH_DESKTOP_RUNTIME_ROOT;
-  if (configuredRoot && configuredRoot.trim()) {
-    return path.resolve(configuredRoot.trim());
-  }
-
-  const appRoot = app.isPackaged
-    ? process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath)
-    : path.resolve(__dirname, "..", "..");
-  return path.join(appRoot, "runtime");
-}
-
-function migrateRuntimeConfig(runtimeRoot) {
-  const oldRoot = app.getPath("userData");
-  if (!oldRoot || path.resolve(oldRoot) === path.resolve(runtimeRoot)) {
-    return;
-  }
-
-  copyFileIfMissing(
-    path.join(oldRoot, "desktop-settings.json"),
-    path.join(runtimeRoot, "desktop-settings.json"),
-  );
-  copyFileIfMissing(
-    path.join(oldRoot, "server-runtime", ".env"),
-    path.join(runtimeRoot, "server-runtime", ".env"),
-  );
-}
-
-function copyFileIfMissing(sourcePath, targetPath) {
-  try {
-    if (!fs.existsSync(sourcePath) || fs.existsSync(targetPath)) {
-      return;
-    }
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.copyFileSync(sourcePath, targetPath);
-    writeLog("runtime:migrated-file", { sourcePath, targetPath });
-  } catch (error) {
-    writeLog("runtime:migration-failed", {
-      sourcePath,
-      targetPath,
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
 }
 
 function delay(ms) {
@@ -296,10 +251,16 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   writeLog("app:ready");
-  const runtimeRoot = resolveDesktopRuntimeRoot();
-  migrateRuntimeConfig(runtimeRoot);
+
+  try {
+    await ensureServerReady();
+  } catch (error) {
+    writeLog("server:start-failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   ipcMain.handle("window:minimize", (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();
@@ -309,32 +270,23 @@ app.whenReady().then(() => {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });
 
-  desktopApi = createDesktopApi({
-    app,
-    runtimeRoot,
-    writeLog,
-  });
+  desktopApi = createDesktopApi({ app, writeLog });
   configurePermissions();
 
   ipcMain.handle("api:get-config", () =>
-    timedIpc("api:get-config", () => callWhenServerReady(() => desktopApi.getConfig())),
+    timedIpc("api:get-config", () => desktopApi.getConfig()),
   );
   ipcMain.handle("api:save-config", (_event, payload) =>
-    timedIpc("api:save-config", () => callWhenServerReady(() => desktopApi.saveConfig(payload))),
+    timedIpc("api:save-config", () => desktopApi.saveConfig(payload)),
   );
   ipcMain.handle("api:generate-station", (_event, payload) =>
-    timedIpc("api:generate-station", () =>
-      callWhenServerReady(() => desktopApi.generateStation(payload)),
-    ),
+    timedIpc("api:generate-station", () => desktopApi.generateStation(payload)),
   );
   ipcMain.handle("api:chat-station", (_event, payload) =>
-    timedIpc("api:chat-station", () =>
-      callWhenServerReady(() => desktopApi.chatStation(payload)),
-    ),
+    timedIpc("api:chat-station", () => desktopApi.chatStation(payload)),
   );
 
   createWindow();
-  startServerInBackground();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -342,19 +294,6 @@ app.whenReady().then(() => {
     }
   });
 });
-
-function startServerInBackground() {
-  ensureServerReady().catch((error) => {
-    writeLog("server:start-failed", {
-      message: error instanceof Error ? error.message : String(error),
-    });
-  });
-}
-
-async function callWhenServerReady(callback) {
-  await ensureServerReady();
-  return callback();
-}
 
 function configurePermissions() {
   const ses = session.defaultSession;

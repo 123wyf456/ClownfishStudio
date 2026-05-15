@@ -143,8 +143,8 @@ Desktop UI -> Electron IPC -> FastAPI server -> tools/providers/agent -> program
 
 - Agent provider
   - `mock`
-  - `openai`
-  - `deepseek`
+  - `openai`（OpenAI-compatible，包括 DeepSeek、OpenRouter、硅基流动、本地兼容网关等）
+  - `anthropic`
 - OpenWeather
 - Fish Audio
 - 网易云
@@ -264,9 +264,8 @@ RADIO_AGENT_MODEL=gpt-5.4
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 
-DEEPSEEK_API_KEY=
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
+ANTHROPIC_API_KEY=
+ANTHROPIC_BASE_URL=https://api.anthropic.com
 
 TTS_PROVIDER=mock
 FISH_AUDIO_API_KEY=
