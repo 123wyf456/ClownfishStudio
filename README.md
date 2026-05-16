@@ -344,10 +344,11 @@ npm run build
 
 ## 文档
 
-- [ARCHITECTURE.md](d:/workspace/vibe_coding/ClownfishStudio/ARCHITECTURE.md)：架构说明
-- [DESIGN.md](d:/workspace/vibe_coding/ClownfishStudio/DESIGN.md)：设计方向
-- [desktop/README.md](d:/workspace/vibe_coding/ClownfishStudio/desktop/README.md)：桌面端说明
-- [AGENTS.md](d:/workspace/vibe_coding/ClownfishStudio/AGENTS.md)：项目开发约束
+- [ARCHITECTURE.md](ARCHITECTURE.md)：架构说明
+- [DESIGN.md](DESIGN.md)：设计方向
+- [desktop/README.md](desktop/README.md)：桌面端说明
+- [docs/RELEASES.md](docs/RELEASES.md)：GitHub Releases 与 CI 自动打包说明
+- [AGENTS.md](AGENTS.md)：项目开发约束
 
 ## 一句话总结
 
