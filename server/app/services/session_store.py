@@ -8,14 +8,14 @@ from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, Text,
 from sqlalchemy.engine import Engine
 
 from app.db.session import get_engine
-from app.schemas import ChatMessage, ProgramItem, StationSession
+from app.schemas import ChatMessage, PlaylistItem, ProgramItem, StationSession
 
 
 @dataclass
 class StationSessionState:
     session: StationSession
     chat_history: list[ChatMessage] = field(default_factory=list)
-    current_item: ProgramItem | None = None
+    current_item: PlaylistItem | ProgramItem | None = None
 
 
 metadata = MetaData()
@@ -106,11 +106,7 @@ def get_station_session(user_id: str) -> StationSessionState | None:
 
         session = StationSession.model_validate(json.loads(session_row["session_json"]))
         current_item_json = session_row["current_item_json"]
-        current_item = (
-            ProgramItem.model_validate(json.loads(current_item_json))
-            if isinstance(current_item_json, str) and current_item_json
-            else None
-        )
+        current_item = _load_current_item(current_item_json)
         chat_history = [
             ChatMessage.model_validate(json.loads(row["message_json"])) for row in chat_rows
         ]
@@ -147,7 +143,7 @@ def append_chat_message(user_id: str, message: ChatMessage) -> None:
         )
 
 
-def update_current_item(user_id: str, item: ProgramItem | None) -> None:
+def update_current_item(user_id: str, item: PlaylistItem | ProgramItem | None) -> None:
     engine = get_engine()
     _ensure_tables(engine)
 
@@ -169,3 +165,13 @@ def clear_station_session_store() -> None:
 
 def _ensure_tables(engine: Engine) -> None:
     metadata.create_all(engine)
+
+
+def _load_current_item(current_item_json: object) -> PlaylistItem | ProgramItem | None:
+    if not isinstance(current_item_json, str) or not current_item_json:
+        return None
+
+    payload = json.loads(current_item_json)
+    if isinstance(payload, dict) and "inserted_by" in payload:
+        return PlaylistItem.model_validate(payload)
+    return ProgramItem.model_validate(payload)

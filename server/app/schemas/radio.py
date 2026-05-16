@@ -39,6 +39,25 @@ class ProgramItemType(StrEnum):
     podcast = "podcast"
 
 
+class PlaylistItemSource(StrEnum):
+    initial = "initial"
+    refill = "refill"
+    user_request = "user_request"
+
+
+class PlaylistRecommendationKind(StrEnum):
+    real_recommendation = "real_recommendation"
+    real_search = "real_search"
+    mock_fallback = "mock_fallback"
+
+
+class PlayerAdvanceReason(StrEnum):
+    ended = "ended"
+    next = "next"
+    previous = "previous"
+    skip = "skip"
+
+
 class FeedbackType(StrEnum):
     like = "like"
     dislike = "dislike"
@@ -147,6 +166,41 @@ class RadioProgram(StrictSchema):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class PlaylistItem(StrictSchema):
+    item_id: str = Field(min_length=1)
+    candidate_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    creator: str = Field(min_length=1)
+    duration_seconds: int | None = Field(default=None, ge=1)
+    playback_url: str | None = None
+    source: str = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    inserted_by: PlaylistItemSource = PlaylistItemSource.initial
+    recommendation_kind: PlaylistRecommendationKind = PlaylistRecommendationKind.real_search
+    added_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class RadioPlaylist(StrictSchema):
+    playlist_id: str = Field(min_length=1)
+    items: list[PlaylistItem] = Field(default_factory=list)
+    current_index: int = Field(default=0, ge=0)
+    target_size: int = Field(default=8, ge=1, le=100)
+    refill_threshold: int = Field(default=3, ge=0, le=99)
+    revision: int = Field(default=0, ge=0)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def validate_current_index(self) -> Self:
+        if len(self.items) > self.target_size:
+            raise ValueError("playlist items cannot exceed target_size")
+        if self.items and self.current_index >= len(self.items):
+            raise ValueError("playlist current_index must point to an item")
+        if self.refill_threshold >= self.target_size:
+            raise ValueError("playlist refill_threshold must be smaller than target_size")
+        return self
+
+
 class FeedbackEvent(StrictSchema):
     feedback_type: FeedbackType
     user_id: str = Field(min_length=1)
@@ -174,6 +228,7 @@ class GenerateProgramResponse(StrictSchema):
     program: RadioProgram
     candidate_count: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
+    candidate_items: list[CandidateItem] = Field(default_factory=list, exclude=True)
 
 
 class IntegrationStatus(StrictSchema):
@@ -298,7 +353,8 @@ class StationSession(StrictSchema):
     greeting: str = Field(min_length=1)
     tts_text: str | None = None
     tts_audio_url: str | None = None
-    program: RadioProgram
+    program: RadioProgram | None = None
+    playlist: RadioPlaylist | None = None
     weather: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
     calendar_events: list[CalendarEvent] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -325,6 +381,21 @@ class StationChatResponse(StrictSchema):
 
 class PlayerNowResponse(StrictSchema):
     session: StationSession | None = None
-    current_item: ProgramItem | None = None
-    queue: list[ProgramItem] = Field(default_factory=list)
+    current_item: PlaylistItem | ProgramItem | None = None
+    queue: list[PlaylistItem | ProgramItem] = Field(default_factory=list)
+    playlist: RadioPlaylist | None = None
     runtime: RuntimeStatus
+
+
+class PlayerAdvanceRequest(StrictSchema):
+    item_id: str | None = Field(default=None, min_length=1)
+    reason: PlayerAdvanceReason
+
+
+class PlayerAdvanceResponse(StrictSchema):
+    session: StationSession | None = None
+    current_item: PlaylistItem | ProgramItem | None = None
+    queue: list[PlaylistItem | ProgramItem] = Field(default_factory=list)
+    playlist: RadioPlaylist | None = None
+    runtime: RuntimeStatus
+    warnings: list[str] = Field(default_factory=list)

@@ -9,15 +9,30 @@ from uuid import uuid4
 
 from app.agents import RadioAgentRuntime
 from app.schemas import (
+    CandidateItem,
     ChatMessage,
     GenerateProgramRequest,
+    GenerateProgramResponse,
+    PlayerAdvanceRequest,
+    PlayerAdvanceResponse,
     PlayerNowResponse,
+    PlaylistItemSource,
     ProgramItem,
+    RadioProgram,
     RuntimeStatus,
     StationChatRequest,
     StationChatResponse,
     StationGenerateResponse,
     StationSession,
+)
+from app.services.playlist_runtime import (
+    advance_playlist,
+    create_playlist_from_candidates,
+    current_playlist_item,
+    playlist_needs_refill,
+    record_playlist_events,
+    refill_playlist,
+    retune_playlist_after_current,
 )
 from app.services.program_generation import ProgramGenerationService
 from app.services.providers import build_runtime_status
@@ -33,6 +48,10 @@ from app.services.session_store import (
 LOGGER = logging.getLogger(__name__)
 _LOCKS_LOCK = Lock()
 _USER_GENERATION_LOCKS: dict[str, Lock] = {}
+
+
+class NoSuitableSongError(RuntimeError):
+    pass
 
 
 class StationOrchestrator:
@@ -71,6 +90,20 @@ class StationOrchestrator:
         timings["derive_greeting"] = monotonic() - step_started_at
 
         session_warnings = [*generation.warnings]
+        selected_candidates = _program_music_candidates(
+            program=generation.program,
+            candidate_items=generation.candidate_items,
+        )
+        if not selected_candidates:
+            selected_candidates = _music_candidates(generation.candidate_items)
+        playlist = create_playlist_from_candidates(
+            selected_candidates,
+            inserted_by=PlaylistItemSource.initial,
+        )
+        if len(playlist.items) < playlist.target_size:
+            session_warnings.append(
+                "Only part of the initial playlist could be filled with playable music."
+            )
 
         session = StationSession(
             session_id=f"session-{uuid4().hex}",
@@ -85,11 +118,12 @@ class StationOrchestrator:
                     )
                 }
             ),
+            playlist=playlist,
             weather=weather,
             calendar_events=calendar_events,
             warnings=session_warnings,
         )
-        current_item = _first_playable_item(session.program.blocks[0].items)
+        current_item = current_playlist_item(playlist)
 
         step_started_at = monotonic()
         save_station_session(
@@ -222,20 +256,92 @@ class StationOrchestrator:
                 runtime=self.runtime_status(),
             )
 
-        previous_user_state = seed_session.program.context_snapshot.user_state
+        previous_user_state = (
+            seed_session.program.context_snapshot.user_state
+            if seed_session.program is not None
+            else None
+        )
         step_started_at = monotonic()
-        self._generate_station_unlocked(
+        generation = self._generation_service.generate(
             GenerateProgramRequest(
                 user_id=request.user_id,
                 device_context=request.device_context,
-                user_state=previous_user_state.model_copy(
-                    update={"free_text": request.message.strip()}
+                user_state=(
+                    previous_user_state.model_copy(update={"free_text": request.message.strip()})
+                    if previous_user_state is not None
+                    else {
+                        "duration_minutes": 25,
+                        "needs": ["companionship"],
+                        "free_text": request.message.strip(),
+                    }
                 ),
                 max_candidates=_chat_regeneration_candidate_limit(intent),
             ),
             chat_history=chat_history,
         )
-        timings["regenerate_station"] = monotonic() - step_started_at
+        timings["collect_retune_candidates"] = monotonic() - step_started_at
+        if intent == "song_request" and not _has_real_music_candidates(
+            generation.candidate_items
+        ):
+            raise NoSuitableSongError(
+                "没有找到符合这个需求的真实歌曲。可以换一个歌名、歌手，或把描述说得更具体一点。"
+            )
+
+        playlist = seed_session.playlist
+        if playlist is None:
+            playlist = create_playlist_from_candidates(
+                _program_music_candidates(
+                    program=generation.program,
+                    candidate_items=generation.candidate_items,
+                ),
+                inserted_by=PlaylistItemSource.user_request,
+            )
+            mutation_warnings: list[str] = []
+        else:
+            mutation = retune_playlist_after_current(
+                playlist,
+                _program_music_candidates(
+                    program=generation.program,
+                    candidate_items=generation.candidate_items,
+                ),
+            )
+            playlist = mutation.playlist
+            mutation_warnings = mutation.warnings
+            if mutation.dropped_items:
+                record_playlist_events(
+                    user_id=request.user_id,
+                    items=mutation.dropped_items,
+                    event_type="dropped",
+                )
+            if mutation.inserted_items:
+                record_playlist_events(
+                    user_id=request.user_id,
+                    items=mutation.inserted_items,
+                    event_type="inserted",
+                )
+
+        updated_session = seed_session.model_copy(
+            update={
+                "greeting": _compact_agent_reply(
+                    chat_turn.text,
+                    fallback_message=request.message,
+                ),
+                "playlist": playlist,
+                "warnings": [
+                    *seed_session.warnings,
+                    *generation.warnings,
+                    *mutation_warnings,
+                ],
+            }
+        )
+        save_station_session(
+            StationSessionState(
+                session=updated_session,
+                chat_history=chat_history,
+                current_item=current_playlist_item(playlist),
+            )
+        )
+        timings["retune_playlist"] = monotonic() - step_started_at
 
         reply_text = _compact_agent_reply(
             chat_turn.text,
@@ -272,13 +378,22 @@ class StationOrchestrator:
         if state is None:
             return PlayerNowResponse(runtime=self.runtime_status())
 
-        queue = [
-            item
-            for block in state.session.program.blocks
-            for item in block.items
-            if item.item_type != "narration"
-        ]
-        current_item = state.current_item or _first_playable_item(queue)
+        playlist = state.session.playlist
+        if playlist is not None:
+            queue = playlist.items
+            current_item = current_playlist_item(playlist)
+        elif state.session.program is not None:
+            queue = [
+                item
+                for block in state.session.program.blocks
+                for item in block.items
+                if item.item_type != "narration"
+            ]
+            current_item = state.current_item or _first_playable_item(queue)
+        else:
+            queue = []
+            current_item = None
+
         if current_item is not None:
             update_current_item(user_id, current_item)
 
@@ -286,11 +401,244 @@ class StationOrchestrator:
             session=state.session,
             current_item=current_item,
             queue=queue,
+            playlist=playlist,
             runtime=self.runtime_status(),
         )
 
+    def advance_player(
+        self,
+        user_id: str,
+        request: PlayerAdvanceRequest,
+    ) -> PlayerAdvanceResponse:
+        with _generation_lock_for_user(user_id):
+            return self._advance_player_unlocked(user_id=user_id, request=request)
+
+    def _advance_player_unlocked(
+        self,
+        user_id: str,
+        request: PlayerAdvanceRequest,
+    ) -> PlayerAdvanceResponse:
+        state = get_station_session(user_id)
+        if state is None:
+            return PlayerAdvanceResponse(runtime=self.runtime_status())
+
+        playlist = state.session.playlist
+        if playlist is None:
+            now = self.now_playing(user_id)
+            return PlayerAdvanceResponse(
+                session=now.session,
+                current_item=now.current_item,
+                queue=now.queue,
+                playlist=now.playlist,
+                runtime=now.runtime,
+            )
+
+        current_before = current_playlist_item(playlist)
+        if current_before is not None and request.item_id not in {None, current_before.item_id}:
+            return PlayerAdvanceResponse(
+                session=state.session,
+                current_item=current_before,
+                queue=playlist.items,
+                playlist=playlist,
+                runtime=self.runtime_status(),
+                warnings=["Ignored stale playback advance request."],
+            )
+
+        advanced_playlist = advance_playlist(playlist, reason=request.reason)
+        if current_before is not None and advanced_playlist.current_index != playlist.current_index:
+            record_playlist_events(
+                user_id=user_id,
+                items=[current_before],
+                event_type=request.reason.value,
+            )
+
+        warnings: list[str] = []
+        if playlist_needs_refill(advanced_playlist):
+            warnings.append("Playlist refill is needed and can be prepared in the background.")
+
+        playlist = advanced_playlist
+        state = StationSessionState(
+            session=state.session.model_copy(update={"playlist": playlist}),
+            chat_history=state.chat_history,
+            current_item=current_playlist_item(playlist),
+        )
+
+        save_station_session(state)
+
+        current_item = current_playlist_item(playlist)
+        if current_item is not None:
+            update_current_item(user_id, current_item)
+
+        return PlayerAdvanceResponse(
+            session=state.session,
+            current_item=current_item,
+            queue=playlist.items,
+            playlist=playlist,
+            runtime=self.runtime_status(),
+            warnings=warnings,
+        )
+
+    def refill_player(self, user_id: str) -> PlayerAdvanceResponse:
+        with _generation_lock_for_user(user_id):
+            state = get_station_session(user_id)
+            if state is None:
+                return PlayerAdvanceResponse(runtime=self.runtime_status())
+
+            playlist = state.session.playlist
+            if playlist is None:
+                now = self.now_playing(user_id)
+                return PlayerAdvanceResponse(
+                    session=now.session,
+                    current_item=now.current_item,
+                    queue=now.queue,
+                    playlist=now.playlist,
+                    runtime=now.runtime,
+                )
+
+            if not playlist_needs_refill(playlist):
+                current_item = current_playlist_item(playlist)
+                return PlayerAdvanceResponse(
+                    session=state.session,
+                    current_item=current_item,
+                    queue=playlist.items,
+                    playlist=playlist,
+                    runtime=self.runtime_status(),
+                )
+
+        generation, generation_warnings = self._generate_refill_candidates(
+            state=state,
+            message="",
+            chat_history=state.chat_history,
+        )
+
+        with _generation_lock_for_user(user_id):
+            latest_state = get_station_session(user_id)
+            if latest_state is None:
+                return PlayerAdvanceResponse(runtime=self.runtime_status())
+
+            latest_playlist = latest_state.session.playlist
+            if latest_playlist is None:
+                now = self.now_playing(user_id)
+                return PlayerAdvanceResponse(
+                    session=now.session,
+                    current_item=now.current_item,
+                    queue=now.queue,
+                    playlist=now.playlist,
+                    runtime=now.runtime,
+                    warnings=generation_warnings,
+                )
+
+            if not playlist_needs_refill(latest_playlist):
+                current_item = current_playlist_item(latest_playlist)
+                return PlayerAdvanceResponse(
+                    session=latest_state.session,
+                    current_item=current_item,
+                    queue=latest_playlist.items,
+                    playlist=latest_playlist,
+                    runtime=self.runtime_status(),
+                    warnings=generation_warnings,
+                )
+
+            state, warnings = self._apply_refill_generation(
+                state=latest_state,
+                generation=generation,
+                generation_warnings=generation_warnings,
+            )
+            playlist = state.session.playlist or latest_playlist
+            current_item = current_playlist_item(playlist)
+            if current_item is not None:
+                update_current_item(user_id, current_item)
+
+            return PlayerAdvanceResponse(
+                session=state.session,
+                current_item=current_item,
+                queue=playlist.items,
+                playlist=playlist,
+                runtime=self.runtime_status(),
+                warnings=warnings,
+            )
+
     def runtime_status(self) -> RuntimeStatus:
         return build_runtime_status()
+
+    def _generate_refill_candidates(
+        self,
+        *,
+        state: StationSessionState,
+        message: str,
+        chat_history: list[ChatMessage],
+    ) -> tuple[GenerateProgramResponse | None, list[str]]:
+        playlist = state.session.playlist
+        if playlist is None or not playlist_needs_refill(playlist):
+            return None, []
+
+        if state.session.program is None:
+            return None, ["Playlist refill skipped because session context is unavailable."]
+
+        request = GenerateProgramRequest(
+            user_id=state.session.user_id,
+            device_context=state.session.program.context_snapshot.device_context,
+            user_state=state.session.program.context_snapshot.user_state.model_copy(
+                update={
+                    "free_text": (
+                        message or state.session.program.context_snapshot.user_state.free_text
+                    )
+                }
+            ),
+            max_candidates=playlist.target_size,
+        )
+        generation = self._generation_service.generate(
+            request=request,
+            chat_history=chat_history,
+        )
+        return generation, generation.warnings
+
+    def _apply_refill_generation(
+        self,
+        *,
+        state: StationSessionState,
+        generation: GenerateProgramResponse | None,
+        generation_warnings: list[str],
+    ) -> tuple[StationSessionState, list[str]]:
+        playlist = state.session.playlist
+        if playlist is None or not playlist_needs_refill(playlist):
+            return state, generation_warnings
+        if generation is None:
+            return state, generation_warnings
+
+        mutation = refill_playlist(
+            playlist,
+            _program_music_candidates(
+                program=generation.program,
+                candidate_items=generation.candidate_items,
+            ),
+        )
+        if mutation.dropped_items:
+            record_playlist_events(
+                user_id=state.session.user_id,
+                items=mutation.dropped_items,
+                event_type="dropped",
+            )
+        if mutation.inserted_items:
+            record_playlist_events(
+                user_id=state.session.user_id,
+                items=mutation.inserted_items,
+                event_type="inserted",
+            )
+
+        warnings = [*generation_warnings, *mutation.warnings]
+        updated_state = StationSessionState(
+            session=state.session.model_copy(
+                update={
+                    "playlist": mutation.playlist,
+                    "warnings": [*state.session.warnings, *warnings],
+                }
+            ),
+            chat_history=state.chat_history,
+            current_item=current_playlist_item(mutation.playlist),
+        )
+        save_station_session(updated_state)
+        return updated_state, warnings
 
     def _plan_chat_turn_with_fallback(
         self,
@@ -324,6 +672,49 @@ def _first_playable_item(items: list[ProgramItem]) -> ProgramItem | None:
         if item.item_type != "narration":
             return item
     return None
+
+
+def _program_music_candidates(
+    *,
+    program: RadioProgram,
+    candidate_items: list[CandidateItem],
+) -> list[CandidateItem]:
+    candidates_by_id = {candidate.candidate_id: candidate for candidate in candidate_items}
+    selected_candidates: list[CandidateItem] = []
+    seen_candidate_ids: set[str] = set()
+
+    for block in program.blocks:
+        for item in block.items:
+            if item.item_type != "music" or item.candidate_id is None:
+                continue
+            if item.candidate_id in seen_candidate_ids:
+                continue
+            candidate = candidates_by_id.get(item.candidate_id)
+            if candidate is None:
+                continue
+            selected_candidates.append(candidate)
+            seen_candidate_ids.add(item.candidate_id)
+
+    if len(selected_candidates) >= min(8, len(_music_candidates(candidate_items))):
+        return selected_candidates
+
+    selected_candidates.extend(
+        candidate
+        for candidate in _music_candidates(candidate_items)
+        if candidate.candidate_id not in seen_candidate_ids
+    )
+    return selected_candidates
+
+
+def _music_candidates(candidate_items: list[CandidateItem]) -> list[CandidateItem]:
+    return [candidate for candidate in candidate_items if candidate.content_type == "music"]
+
+
+def _has_real_music_candidates(candidate_items: list[CandidateItem]) -> bool:
+    return any(
+        candidate.content_type == "music" and not candidate.source.lower().startswith("mock")
+        for candidate in candidate_items
+    )
 
 
 def _opening_narration(program: object) -> str | None:

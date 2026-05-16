@@ -140,13 +140,15 @@ function resolveBundledServerPaths() {
     ? path.join(process.resourcesPath, "backend", "server")
     : path.join(__dirname, "..", "..", "server");
 
-  const pythonPath = app.isPackaged
-    ? path.join(baseResources, ".venv", "Scripts", "python.exe")
-    : path.join(baseResources, ".venv", "Scripts", "python.exe");
-
+  const pythonCandidates = buildPythonCandidates(baseResources);
+  const pythonPath = pythonCandidates.find((candidate) => fs.existsSync(candidate));
   const serverWorkdir = app.isPackaged ? baseResources : path.join(__dirname, "..", "..", "server");
 
-  if (!fs.existsSync(pythonPath) || !fs.existsSync(serverWorkdir)) {
+  if (!pythonPath || !fs.existsSync(serverWorkdir)) {
+    writeLog("server:paths-missing", {
+      serverWorkdir,
+      pythonCandidates,
+    });
     return null;
   }
 
@@ -156,10 +158,28 @@ function resolveBundledServerPaths() {
   };
 }
 
+function buildPythonCandidates(serverRoot) {
+  const windowsCandidates = [
+    path.join(serverRoot, ".venv", "Scripts", "python.exe"),
+    path.join(serverRoot, ".venv", "Scripts", "python"),
+  ];
+  const posixCandidates = [
+    path.join(serverRoot, ".venv", "bin", "python3"),
+    path.join(serverRoot, ".venv", "bin", "python"),
+  ];
+  return process.platform === "win32"
+    ? [...windowsCandidates, ...posixCandidates]
+    : [...posixCandidates, ...windowsCandidates];
+}
+
 function resolveDesktopRuntimeRoot() {
   const configuredRoot = process.env.CLOWNFISH_DESKTOP_RUNTIME_ROOT;
   if (configuredRoot && configuredRoot.trim()) {
     return path.resolve(configuredRoot.trim());
+  }
+
+  if (app.isPackaged && process.platform === "darwin") {
+    return app.getPath("userData");
   }
 
   const appRoot = app.isPackaged
@@ -226,11 +246,18 @@ function createWindow() {
     maxWidth: 540,
     maxHeight: 960,
     title: "ClownfishStudio",
-    frame: false,
     transparent: false,
     backgroundColor: "#050505",
     resizable: false,
     show: true,
+    ...(process.platform === "darwin"
+      ? {
+          titleBarStyle: "hiddenInset",
+          trafficLightPosition: { x: 18, y: 18 },
+        }
+      : {
+          frame: false,
+        }),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -330,6 +357,11 @@ app.whenReady().then(() => {
   ipcMain.handle("api:chat-station", (_event, payload) =>
     timedIpc("api:chat-station", () =>
       callWhenServerReady(() => desktopApi.chatStation(payload)),
+    ),
+  );
+  ipcMain.handle("api:advance-player", (_event, payload) =>
+    timedIpc("api:advance-player", () =>
+      callWhenServerReady(() => desktopApi.advancePlayer(payload)),
     ),
   );
 

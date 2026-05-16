@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { chatStation, generateStation, loadConfig, saveConfig } from "@/api/desktopApi";
-import type { ApiSettings, RuntimeStatus } from "@/api/types";
+import { advancePlayer, chatStation, generateStation, loadConfig, saveConfig } from "@/api/desktopApi";
+import type { ApiSettings, PlayerAdvanceReason, RuntimeStatus } from "@/api/types";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ContextStrip } from "@/components/ContextStrip";
 import { PlayerModule } from "@/components/PlayerModule";
-import { ProgramCards } from "@/components/ProgramCards";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { WindowControls } from "@/components/WindowControls";
 import { emptyStation, type ChatMessage, type Station } from "@/radioData";
@@ -37,10 +36,39 @@ function makeMessage(role: ChatMessage["role"], text: string): ChatMessage {
   };
 }
 
+function toUserFacingError(error: unknown, fallback: string): string {
+  if (!(error instanceof Error)) {
+    return fallback;
+  }
+
+  const message = error.message.trim();
+  if (!message) {
+    return fallback;
+  }
+
+  if (/[\u4e00-\u9fff]/.test(message)) {
+    return message;
+  }
+
+  if (message.includes("422")) {
+    return "这次请求没有找到可用结果，请调整描述后再试。";
+  }
+  if (message.includes("404")) {
+    return "没有找到对应的服务接口。";
+  }
+  if (message.includes("502") || message.includes("503") || message.includes("504")) {
+    return "电台服务暂时不可用，请稍后再试。";
+  }
+
+  return fallback;
+}
+
 export function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const hasBootstrappedRef = useRef(false);
   const requestInFlightRef = useRef(false);
+  const playbackAdvanceInFlightRef = useRef(false);
+  const isMac = Boolean(window.clownfishRuntime?.isMac);
   const [theme, setTheme] = useState<ThemeMode>(() =>
     window.localStorage.getItem("clownfish-theme") === "dark" ? "dark" : "light",
   );
@@ -77,16 +105,27 @@ export function App() {
   const currentTrack = station.tracks[trackIndex] ?? station.tracks[0] ?? emptyStation.tracks[0];
   const isStationReady = station.id !== emptyStation.id && station.tracks.length > 0;
 
-  const applyRemoteStation = useCallback((remoteStation: Station, nextWarnings: string[]) => {
+  const applyRemoteStation = useCallback((remoteStation: Station, nextWarnings: string[], options?: {
+    preservePlayback?: boolean;
+    playAfterApply?: boolean;
+  }) => {
     setStationList((items) => {
       const withoutRemote = items.filter((item) => item.id !== remoteStation.id);
       return [remoteStation, ...withoutRemote].slice(0, 4);
     });
     setActiveStationId(remoteStation.id);
-    setTrackIndex(0);
-    setProgress(0);
-    setIsPlaying(false);
-    setWarnings(nextWarnings);
+    setTrackIndex(
+      Math.max(
+        0,
+        Math.min(remoteStation.currentTrackIndex ?? 0, Math.max(0, remoteStation.tracks.length - 1)),
+      ),
+    );
+    if (!options?.preservePlayback) {
+      setProgress(0);
+      setIsPlaying(Boolean(options?.playAfterApply));
+    }
+    setWarnings(nextWarnings.filter(Boolean));
+    setApiError("");
   }, []);
 
   const dismissNotice = useCallback((message: string) => {
@@ -117,7 +156,7 @@ export function App() {
           setMessages((items) => [...items, makeMessage("agent", greeting)]);
         }
       } catch (error) {
-        setApiError(error instanceof Error ? error.message : "Station generation failed");
+        setApiError(toUserFacingError(error, "电台生成失败，请稍后再试。"));
       } finally {
         requestInFlightRef.current = false;
         setIsAdapting(false);
@@ -126,26 +165,42 @@ export function App() {
     [applyRemoteStation, deviceLocation],
   );
 
+  const advancePlayback = useCallback(
+    async (reason: PlayerAdvanceReason) => {
+      if (!isStationReady || playbackAdvanceInFlightRef.current) {
+        return;
+      }
+      playbackAdvanceInFlightRef.current = true;
+      setApiError("");
+      try {
+        const response = await advancePlayer({
+          itemId: currentTrack.id,
+          reason,
+        });
+        if (response?.station) {
+          applyRemoteStation(response.station, response.warnings ?? [], { playAfterApply: true });
+          setRuntime(response.runtime);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (!message.includes("interrupted by a call to pause")) {
+          setApiError(toUserFacingError(error, "播放切换失败，请稍后再试。"));
+        }
+        setIsPlaying(false);
+      } finally {
+        playbackAdvanceInFlightRef.current = false;
+      }
+    },
+    [applyRemoteStation, currentTrack.id, isStationReady],
+  );
+
   const nextTrack = useCallback(() => {
-    setTrackIndex((index) => (index + 1) % station.tracks.length);
-    setProgress(0);
-    setIsPlaying(true);
-  }, [station.tracks.length]);
+    void advancePlayback("next");
+  }, [advancePlayback]);
 
   const previousTrack = useCallback(() => {
-    setTrackIndex((index) => (index - 1 + station.tracks.length) % station.tracks.length);
-    setProgress(0);
-    setIsPlaying(true);
-  }, [station.tracks.length]);
-
-  const selectTrack = useCallback((index: number) => {
-    setTrackIndex(index);
-    setProgress(0);
-    setIsPlaying(true);
-    if (audioRef.current) {
-      audioRef.current.currentTime = 0;
-    }
-  }, []);
+    void advancePlayback("previous");
+  }, [advancePlayback]);
 
   const seekTrack = useCallback((seconds: number) => {
     setProgress(seconds);
@@ -169,7 +224,7 @@ export function App() {
       chatStation({ deviceLocation, message: cleanText })
         .then((response) => {
           if (response?.station) {
-            applyRemoteStation(response.station, response.warnings ?? []);
+            applyRemoteStation(response.station, response.warnings ?? [], { preservePlayback: true });
             setRuntime(response.runtime);
             const replyText =
               response.station.chatReply ||
@@ -183,7 +238,7 @@ export function App() {
           }
         })
         .catch((error: unknown) => {
-          setApiError(error instanceof Error ? error.message : "Chat request failed");
+          setApiError(toUserFacingError(error, "聊天请求失败，请稍后再试。"));
         })
         .finally(() => {
           requestInFlightRef.current = false;
@@ -222,7 +277,7 @@ export function App() {
         setRuntime(response.runtime);
       })
       .catch((error: unknown) => {
-        setApiError(error instanceof Error ? error.message : "Failed to load settings");
+        setApiError(toUserFacingError(error, "读取配置失败，请稍后再试。"));
       });
   }, []);
 
@@ -283,9 +338,9 @@ export function App() {
 
   useEffect(() => {
     if (progress >= currentTrack.duration) {
-      nextTrack();
+      void advancePlayback("ended");
     }
-  }, [currentTrack.duration, nextTrack, progress]);
+  }, [advancePlayback, currentTrack.duration, progress]);
 
   useEffect(() => {
     audioRef.current?.pause();
@@ -300,10 +355,14 @@ export function App() {
     audio.preload = "auto";
 
     const syncProgress = () => setProgress(Math.round(audio.currentTime));
-    const playNext = () => nextTrack();
+    const playNext = () => {
+      void advancePlayback("ended");
+    };
     const handleError = () => {
       const mediaError = audio.error?.message || "unsupported source";
-      setApiError(`Music playback failed for "${currentTrack.title}": ${mediaError}`);
+      if (!mediaError.includes("interrupted by a call to pause")) {
+        setApiError(`播放 "${currentTrack.title}" 失败：${mediaError}`);
+      }
       setIsPlaying(false);
     };
     audio.addEventListener("timeupdate", syncProgress);
@@ -319,7 +378,7 @@ export function App() {
         audioRef.current = null;
       }
     };
-  }, [currentTrack.playbackUrl, currentTrack.title, nextTrack]);
+  }, [advancePlayback, currentTrack.playbackUrl, currentTrack.title]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -329,7 +388,10 @@ export function App() {
 
     if (isPlaying) {
       audio.play().catch((error: unknown) => {
-        setApiError(error instanceof Error ? error.message : "Audio playback failed");
+        const message = error instanceof Error ? error.message : "";
+        if (!message.includes("interrupted by a call to pause")) {
+          setApiError(toUserFacingError(error, "音频播放失败。"));
+        }
         setIsPlaying(false);
       });
     } else {
@@ -352,19 +414,20 @@ export function App() {
         transition={{ duration: 0.45, ease: "easeOut" }}
       >
         <div className="app-surface flex min-h-0 flex-1 flex-col rounded-[24px] p-1 transition-colors duration-700">
-          <header className="flex h-9 shrink-0 items-center justify-between rounded-t-[18px] px-2 [-webkit-app-region:drag]">
+          <header className={`flex h-9 shrink-0 items-center justify-between rounded-t-[18px] px-2 [-webkit-app-region:drag] ${isMac ? "pl-16" : ""}`}>
             <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em] text-ink">
               ClownfishStudio
             </h1>
             <WindowControls
               onOpenSettings={() => setIsSettingsOpen(true)}
               onToggleTheme={toggleTheme}
+              isMac={isMac}
               theme={theme}
             />
           </header>
 
           <div className="min-h-0 flex-1 pb-1">
-            <div className="grid h-full grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-3">
+            <div className="grid h-full grid-rows-[auto_auto_minmax(0,1fr)] gap-3">
               <PlayerModule
                 currentTrack={currentTrack}
                 isLoading={!isStationReady && isAdapting}
@@ -384,12 +447,6 @@ export function App() {
                 volume={volume}
                 weather={station.weather}
                 onVolumeChange={setVolume}
-              />
-              <ProgramCards
-                activeTrackIndex={trackIndex}
-                isLoading={!isStationReady && isAdapting}
-                tracks={station.tracks}
-                onSelectTrack={selectTrack}
               />
               <ChatPanel
                 apiError={apiError}

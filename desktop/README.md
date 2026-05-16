@@ -1,6 +1,6 @@
 # ClownfishStudio Desktop
 
-Windows desktop client for ClownfishStudio.
+Windows / macOS desktop client for ClownfishStudio.
 
 ## Stack
 
@@ -18,19 +18,44 @@ npm install
 npm run dev
 npm run build
 npm run dist
+npm run dist:win
+npm run dist:mac
 ```
 
-`npm run dist` creates a portable Windows executable at:
+`npm run dist` builds for the current host platform. To build a specific target:
+
+```bash
+npm run dist:win
+npm run dist:mac
+```
+
+Windows output:
 
 ```text
 release/ClownfishStudio-0.1.0-windows-portable.exe
+```
+
+macOS output:
+
+```text
+release/ClownfishStudio-0.1.0-mac-arm64.dmg
+release/ClownfishStudio-0.1.0-mac-x64.dmg
+```
+
+macOS packages must be built on macOS. The bundled backend also expects a
+platform-native Python virtual environment:
+
+```text
+server/.venv/Scripts/python.exe   # Windows
+server/.venv/bin/python3          # macOS
+server/.venv/bin/python           # macOS fallback
 ```
 
 If GitHub download access is slow when packaging NSIS resources, run:
 
 ```powershell
 $env:ELECTRON_BUILDER_BINARIES_MIRROR='https://npmmirror.com/mirrors/electron-builder-binaries/'
-npm run dist
+npm run dist:win
 ```
 
 If the executable immediately exits when launched from a terminal, make sure the
@@ -43,13 +68,13 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
 ## Current Scope
 
-The current client is a fixed-size 540 x 960 Windows desktop app with:
+The current client is a fixed-size 540 x 960 desktop app with:
 
 - light and dark themes
 - a turntable-inspired player surface
-- a program strip that shows three tracks at a time
 - companion chat inside the same device frame
 - settings for Agent, OpenWeather, NetEase Cloud Music, and Fish Audio
+- native macOS traffic lights in macOS builds
 - persistent NetEase metadata cache under app user data to speed up relaunches
 - local music caching for remote NetEase playback URLs
 

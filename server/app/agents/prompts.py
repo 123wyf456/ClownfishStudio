@@ -196,15 +196,22 @@ def build_chat_turn_prompt(
     message: str,
     chat_history: list[ChatMessage] | None = None,
 ) -> str:
-    current_tracks = [
-        f"{item.title} - {item.creator}"
-        for block in session.program.blocks
-        for item in block.items
-        if item.item_type != "narration"
-    ][:6]
+    if session.playlist is not None:
+        current_tracks = [
+            f"{item.title} - {item.creator}" for item in session.playlist.items[:6]
+        ]
+    elif session.program is not None:
+        current_tracks = [
+            f"{item.title} - {item.creator}"
+            for block in session.program.blocks
+            for item in block.items
+            if item.item_type != "narration"
+        ][:6]
+    else:
+        current_tracks = []
     context = {
-        "station_title": session.program.title,
-        "station_summary": session.program.summary,
+        "station_title": session.program.title if session.program is not None else "",
+        "station_summary": session.program.summary if session.program is not None else "",
         "current_tracks": current_tracks,
     }
     return "\n".join(

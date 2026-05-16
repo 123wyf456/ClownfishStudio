@@ -132,6 +132,7 @@ class ProgramGenerationService:
             program=program,
             candidate_count=len(candidate_items),
             warnings=[*warnings, *([agent_warning] if agent_warning else [])],
+            candidate_items=candidate_items,
         )
 
     def _generate_program_with_fallback(

@@ -5,12 +5,14 @@ type WindowControlsProps = {
   onOpenSettings: () => void;
   onToggleTheme: () => void;
   theme: "light" | "dark";
+  isMac?: boolean;
 };
 
 export function WindowControls({
   onOpenSettings,
   onToggleTheme,
   theme,
+  isMac = false,
 }: WindowControlsProps) {
   return (
     <div className="flex items-center gap-1 [-webkit-app-region:no-drag]">
@@ -36,24 +38,28 @@ export function WindowControls({
       >
         <Settings className="h-3.5 w-3.5" />
       </Button>
-      <Button
-        aria-label="Minimize"
-        size="icon"
-        variant="ghost"
-        className="h-7 w-7"
-        onClick={() => window.clownfishWindow?.minimize()}
-      >
-        <Minus className="h-3.5 w-3.5" />
-      </Button>
-      <Button
-        aria-label="Close"
-        size="icon"
-        variant="ghost"
-        className="h-7 w-7"
-        onClick={() => window.clownfishWindow?.close()}
-      >
-        <X className="h-3.5 w-3.5" />
-      </Button>
+      {!isMac ? (
+        <>
+          <Button
+            aria-label="Minimize"
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7"
+            onClick={() => window.clownfishWindow?.minimize()}
+          >
+            <Minus className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            aria-label="Close"
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7"
+            onClick={() => window.clownfishWindow?.close()}
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </>
+      ) : null}
     </div>
   );
 }

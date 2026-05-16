@@ -209,12 +209,77 @@ function createDesktopApi({ app, runtimeRoot, writeLog }) {
     }
   }
 
+  async function advancePlayer(payload = {}) {
+    const startedAt = Date.now();
+    const localConfig = readConfig();
+    const reason = typeof payload.reason === "string" ? payload.reason : "ended";
+    const itemId = typeof payload.itemId === "string" ? payload.itemId : undefined;
+    writeLog("desktopApi:advancePlayer:start", { reason, itemId: itemId || "" });
+    try {
+      const response = await requestJson(
+        localConfig.serverBaseUrl,
+        "/api/player/desktop-user/advance",
+        {
+          method: "POST",
+          body: {
+            item_id: itemId,
+            reason,
+          },
+        },
+      );
+      const normalized = await normalizeStationResponse(response, localConfig, musicDir);
+      maybeRefillPlaylistInBackground(normalized, localConfig, musicDir, writeLog);
+      writeLog("desktopApi:advancePlayer:end", { durationMs: Date.now() - startedAt });
+      return normalized;
+    } catch (error) {
+      writeLog("desktopApi:advancePlayer:failed", {
+        durationMs: Date.now() - startedAt,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
   return {
     getConfig,
     saveConfig,
     generateStation,
     chatStation,
+    advancePlayer,
   };
+}
+
+function maybeRefillPlaylistInBackground(normalized, localConfig, musicDir, writeLog) {
+  const station = normalized?.station;
+  if (!station || typeof station !== "object") {
+    return;
+  }
+
+  const currentIndex = Number.isInteger(station.currentTrackIndex)
+    ? station.currentTrackIndex
+    : 0;
+  const tracks = Array.isArray(station.tracks) ? station.tracks : [];
+  const remaining = Math.max(0, tracks.length - currentIndex - 1);
+  if (remaining > 3) {
+    return;
+  }
+
+  writeLog("desktopApi:refillPlayer:start", { remaining });
+  requestJson(localConfig.serverBaseUrl, "/api/player/desktop-user/refill", {
+    method: "POST",
+  })
+    .then((response) => normalizeStationResponse(response, localConfig, musicDir))
+    .then((refilled) => {
+      writeLog("desktopApi:refillPlayer:end", {
+        trackCount: refilled?.station?.tracks?.length || 0,
+        currentTrackIndex: refilled?.station?.currentTrackIndex ?? 0,
+      });
+    })
+    .catch((error) => {
+      writeLog("desktopApi:refillPlayer:failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
 }
 
 function sanitizeLocalConfig(config) {
@@ -265,10 +330,17 @@ function normalizeDeviceLocation(deviceLocation) {
 async function normalizeStationResponse(payload, localConfig, musicDir) {
   const session = payload?.session || {};
   const program = session?.program || {};
+  const playlist = payload?.playlist || session?.playlist || {};
+  const playlistItems = Array.isArray(playlist?.items) ? playlist.items : [];
   const blocks = Array.isArray(program?.blocks) ? program.blocks : [];
-  const playableItems = blocks
-    .flatMap((block) => (Array.isArray(block?.items) ? block.items : []))
-    .filter((item) => item?.item_type !== "narration" && item?.candidate_id);
+  const playableItems = playlistItems.length > 0
+    ? playlistItems
+    : blocks
+      .flatMap((block) => (Array.isArray(block?.items) ? block.items : []))
+      .filter((item) => item?.item_type !== "narration" && item?.candidate_id);
+  const currentIndex = Number.isInteger(playlist?.current_index)
+    ? Math.max(0, Math.min(Number(playlist.current_index), Math.max(0, playableItems.length - 1)))
+    : 0;
 
   const tracks = playableItems.slice(0, 18).map((item, index) => {
     const remotePlaybackUrl = item.playback_url || "";
@@ -281,7 +353,10 @@ async function normalizeStationResponse(payload, localConfig, musicDir) {
       artist: item.creator || "Unknown artist",
       duration: Number(item.duration_seconds || 180),
       playbackUrl: cachedPlaybackUrl || remotePlaybackUrl,
-      source: "server",
+      source: item.source || "server",
+      insertedBy: item.inserted_by || "",
+      recommendationKind: item.recommendation_kind || "",
+      tags: Array.isArray(item.tags) ? item.tags.filter((tag) => typeof tag === "string") : [],
     };
   });
 
@@ -304,6 +379,7 @@ async function normalizeStationResponse(payload, localConfig, musicDir) {
       agentLine: assistantText,
       ttsAudioUrl: resolveServerAssetUrl(localConfig.serverBaseUrl, session?.tts_audio_url || ""),
       tracks: tracks.length > 0 ? tracks : fallbackTracks(),
+      currentTrackIndex: currentIndex,
       chatReply: payload?.reply?.text || "",
       greeting: session?.greeting || "",
       sessionId: session?.session_id || "",
@@ -392,9 +468,47 @@ async function requestJson(serverBaseUrl, endpoint, options) {
   });
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(`${endpoint} ${response.status} ${detail}`.trim());
+    throw new Error(formatHttpError(endpoint, response.status, detail));
   }
   return response.json();
+}
+
+function formatHttpError(endpoint, status, bodyText) {
+  const detail = extractResponseDetail(bodyText);
+  if (typeof detail === "string" && detail.trim() && /[\u4e00-\u9fff]/.test(detail)) {
+    return detail.trim();
+  }
+
+  if (status === 422) {
+    return "这次请求没有找到可用结果，请调整描述后再试。";
+  }
+  if (status === 404) {
+    return "没有找到对应的电台服务接口。";
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return "电台服务暂时不可用，请稍后再试。";
+  }
+  if (status >= 500) {
+    return "后端服务遇到问题，请稍后再试。";
+  }
+  return `请求失败（${endpoint}，HTTP ${status}）。`;
+}
+
+function extractResponseDetail(bodyText) {
+  if (!bodyText || typeof bodyText !== "string") {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(bodyText);
+    if (typeof parsed?.detail === "string") {
+      return parsed.detail;
+    }
+  } catch {
+    // Keep the generic message when the server did not return JSON.
+  }
+
+  return "";
 }
 
 async function cacheRemoteTrack(sourceUrl, musicDir, warnings) {

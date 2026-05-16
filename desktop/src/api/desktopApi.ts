@@ -3,6 +3,7 @@ import {
   type ConfigResponse,
   type DeviceLocation,
   type GenerateStationResponse,
+  type PlayerAdvanceReason,
 } from "@/api/types";
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -143,6 +144,14 @@ export async function chatStation(payload: {
   message: string;
 }): Promise<GenerateStationResponse | null> {
   const response = await window.clownfishApi?.chatStation(payload);
+  return isObject(response) ? (response as GenerateStationResponse) : null;
+}
+
+export async function advancePlayer(payload: {
+  itemId?: string;
+  reason: PlayerAdvanceReason;
+}): Promise<GenerateStationResponse | null> {
+  const response = await window.clownfishApi?.advancePlayer(payload);
   return isObject(response) ? (response as GenerateStationResponse) : null;
 }
 

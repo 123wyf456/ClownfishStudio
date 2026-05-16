@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { ArrowUp, Bot, UserRound, X } from "lucide-react";
+import { AlertCircle, ArrowUp, Bot, ChevronRight, UserRound, X } from "lucide-react";
 import { motion } from "framer-motion";
 import type { RuntimeStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -28,9 +28,9 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [draft, setDraft] = useState("");
   const [waitingIndex, setWaitingIndex] = useState(0);
+  const [expandedWarnings, setExpandedWarnings] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const activeWarnings = [apiError, ...warnings].filter(Boolean).slice(0, 2);
   const waitingPhrases = useMemo(
     () =>
       isInitializing
@@ -39,6 +39,12 @@ export function ChatPanel({
     [isInitializing],
   );
   const waitingText = waitingPhrases[waitingIndex % waitingPhrases.length];
+  const normalizedWarnings = useMemo(
+    () =>
+      warnings.filter(Boolean).map((warning) => warning.trim()).filter((warning) => warning.length > 0),
+    [warnings],
+  );
+  const visibleWarnings = expandedWarnings ? normalizedWarnings : normalizedWarnings.slice(0, 2);
 
   useEffect(() => {
     const scrollNode = scrollRef.current;
@@ -46,7 +52,11 @@ export function ChatPanel({
       return;
     }
     scrollNode.scrollTo({ top: scrollNode.scrollHeight, behavior: "smooth" });
-  }, [messages.length, activeWarnings.length]);
+  }, [messages.length, normalizedWarnings.length]);
+
+  useEffect(() => {
+    setExpandedWarnings(false);
+  }, [normalizedWarnings.length]);
 
   useEffect(() => {
     if (!isAdapting) {
@@ -145,15 +155,48 @@ export function ChatPanel({
         )}
       </div>
 
-      {activeWarnings.length > 0 ? (
+      {apiError ? (
+        <div className="error-panel mt-2 rounded-[12px] border px-3 py-2 text-[9px] leading-relaxed">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-[1px] h-3.5 w-3.5 shrink-0" />
+            <p className="min-w-0 flex-1">{apiError}</p>
+            {onDismissNotice ? (
+              <button
+                aria-label="Close error"
+                className="-mr-1 mt-[1px] shrink-0 rounded-full p-0.5 text-current/70 transition hover:bg-current/10 hover:text-current"
+                onClick={() => onDismissNotice(apiError)}
+                type="button"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {visibleWarnings.length > 0 ? (
         <div className="warning-panel mt-2 rounded-[12px] border px-3 py-2 text-[9px] leading-relaxed">
-          <div className="flex items-start justify-between gap-2">
-            <p className="min-w-0 flex-1">{activeWarnings.join(" ")}</p>
+          <div className="flex items-start gap-2">
+            <ChevronRight className="mt-[1px] h-3.5 w-3.5 shrink-0" />
+            <div className="min-w-0 flex-1 space-y-1">
+              {visibleWarnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+              {normalizedWarnings.length > 2 ? (
+                <button
+                  className="flex items-center gap-1 pt-1 text-left text-current/70 transition hover:text-current"
+                  onClick={() => setExpandedWarnings((value) => !value)}
+                  type="button"
+                >
+                  <span>{expandedWarnings ? "收起提示" : `还有 ${normalizedWarnings.length - 2} 条提示`}</span>
+                </button>
+              ) : null}
+            </div>
             {onDismissNotice ? (
               <button
                 aria-label="Close notice"
-                className="mt-[1px] shrink-0 rounded-full p-0.5 text-current/70 transition hover:bg-current/10 hover:text-current"
-                onClick={() => onDismissNotice(activeWarnings[0])}
+                className="-mr-1 mt-[1px] shrink-0 rounded-full p-0.5 text-current/70 transition hover:bg-current/10 hover:text-current"
+                onClick={() => onDismissNotice(visibleWarnings[0])}
                 type="button"
               >
                 <X className="h-3.5 w-3.5" />

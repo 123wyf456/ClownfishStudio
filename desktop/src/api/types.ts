@@ -47,6 +47,8 @@ export type GenerateStationResponse = {
   warnings: string[];
 };
 
+export type PlayerAdvanceReason = "ended" | "next" | "previous" | "skip";
+
 export const defaultSettings: ApiSettings = {
   serverBaseUrl: "http://127.0.0.1:8000",
   agentProvider: "mock",

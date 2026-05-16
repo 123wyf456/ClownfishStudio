@@ -6,6 +6,9 @@ export type Track = {
   duration: number;
   playbackUrl?: string;
   source?: string;
+  insertedBy?: string;
+  recommendationKind?: "real_recommendation" | "real_search" | "mock_fallback" | string;
+  tags?: string[];
 };
 
 export type Station = {
@@ -22,6 +25,7 @@ export type Station = {
   sessionId?: string;
   ttsAudioUrl?: string;
   tracks: Track[];
+  currentTrackIndex?: number;
 };
 
 export type ChatMessage = {

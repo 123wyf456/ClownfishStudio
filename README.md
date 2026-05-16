@@ -7,7 +7,7 @@ ClownfishStudio 是一个 Agent-First 的 AI 电台项目。
 当前仓库的重点是：
 
 - `server/`：统一的 FastAPI 后端，负责 Agent 调度、工具调用、会话状态和配置管理
-- `desktop/`：Windows Electron 桌面端，作为前端壳层调用 `server/`
+- `desktop/`：Windows / macOS Electron 桌面端，作为前端壳层调用 `server/`
 - `data/mock/`：本地 mock 数据，保证在没有完整真实 API 时也能跑通链路
 
 ## 当前状态
@@ -16,7 +16,7 @@ ClownfishStudio 是一个 Agent-First 的 AI 电台项目。
 
 - 桌面端不再维护独立推荐后端
 - Agent、节目生成、聊天、配置、provider 状态都由 `server/` 统一处理
-- 打包后的 Windows 可执行程序会自动启动内置 FastAPI 后端
+- 打包后的 Windows / macOS 桌面程序会自动启动内置 FastAPI 后端
 - 网易云、天气、TTS、Agent 配置都可以通过桌面端设置面板注入
 
 ## 项目结构
@@ -60,7 +60,7 @@ Desktop UI -> Electron IPC -> FastAPI server -> tools/providers/agent -> program
 职责划分如下：
 
 - `desktop/`
-  - 提供 Windows 客户端界面
+  - 提供 Windows / macOS 客户端界面
   - 负责播放器 UI、聊天 UI、设置 UI
   - 通过 Electron IPC 调用本地后端
   - 打包时把 `server/` 一起带入可执行程序
@@ -154,14 +154,21 @@ Desktop UI -> Electron IPC -> FastAPI server -> tools/providers/agent -> program
 - `GET /api/config`
 - `PUT /api/config`
 
-### 5. Windows 桌面打包
+### 5. 桌面端打包
 
-桌面端使用 Electron 打包为 Windows portable exe。
+桌面端使用 Electron 打包，当前支持 Windows portable exe 和 macOS dmg/zip。
 
-当前打包产物路径：
+Windows 产物路径：
 
 ```text
 desktop/release/ClownfishStudio-0.1.0-windows-portable.exe
+```
+
+macOS 产物路径：
+
+```text
+desktop/release/ClownfishStudio-0.1.0-mac-arm64.dmg
+desktop/release/ClownfishStudio-0.1.0-mac-x64.dmg
 ```
 
 打包后的程序会自动尝试启动内置后端，默认监听：
@@ -228,18 +235,34 @@ npm run dev
 http://127.0.0.1:8000
 ```
 
-### 3. 打包 Windows 可执行程序
+### 3. 打包桌面程序
 
 ```powershell
 cd desktop
-npm run dist
+npm run dist:win
 ```
 
-产物位置：
+Windows 产物位置：
 
 ```text
 desktop/release/ClownfishStudio-0.1.0-windows-portable.exe
 ```
+
+macOS 需要在 macOS 环境执行：
+
+```bash
+cd desktop
+npm run dist:mac
+```
+
+macOS 产物位置：
+
+```text
+desktop/release/ClownfishStudio-0.1.0-mac-arm64.dmg
+desktop/release/ClownfishStudio-0.1.0-mac-x64.dmg
+```
+
+注意：打包时需要目标平台对应的 `server/.venv`。Windows 使用 `server/.venv/Scripts/python.exe`，macOS 使用 `server/.venv/bin/python3` 或 `server/.venv/bin/python`。
 
 如果你是在某些终端环境里启动 exe，且环境变量 `ELECTRON_RUN_AS_NODE=1` 被错误继承，程序可能会直接退出。可以先执行：
 
@@ -305,10 +328,10 @@ npm run build
 
 当前已经验证通过的内容包括：
 
-- `server`: `49 passed`
+- `server`: `75 passed`
 - `server`: `ruff check` passed
 - `desktop`: `npm run build` passed
-- `desktop`: `npm run dist` passed
+- `desktop`: `npm run pack` passed
 
 ## 当前限制
 

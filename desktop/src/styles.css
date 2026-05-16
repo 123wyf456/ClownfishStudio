@@ -111,7 +111,9 @@ button {
 .chat-bubble-ai,
 .chat-bubble-user,
 .voice-terminal,
-.settings-input {
+.settings-input,
+.warning-panel,
+.error-panel {
   transition:
     background-color 700ms ease,
     border-color 700ms ease,
@@ -748,9 +750,22 @@ button {
   color: var(--warning-text);
 }
 
+.error-panel {
+  border-color: color-mix(in srgb, rgb(155 83 83) 28%, transparent);
+  background: color-mix(in srgb, rgb(255 232 232) 62%, var(--color-panel));
+  color: rgb(118 58 58);
+}
+
+.dark .error-panel {
+  border-color: color-mix(in srgb, rgb(232 135 135) 26%, transparent);
+  background: color-mix(in srgb, rgb(94 44 44) 55%, rgba(0, 0, 0, 0.14));
+  color: rgb(239 184 184);
+}
+
 .chat-bubble-ai,
 .chat-bubble-user,
-.warning-panel {
+.warning-panel,
+.error-panel {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
