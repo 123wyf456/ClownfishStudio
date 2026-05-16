@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 
 type SettingsPanelProps = {
   config: ApiSettings;
-  isLoading?: boolean;
+  configLoadState?: "loading" | "ready" | "failed";
   onClose: () => void;
   onGenerate: () => void;
   onSave: (config: ApiSettings) => Promise<void>;
@@ -15,7 +15,7 @@ type SettingsPanelProps = {
 
 export function SettingsPanel({
   config,
-  isLoading = false,
+  configLoadState = "ready",
   onClose,
   onGenerate,
   onSave,
@@ -24,6 +24,8 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const [draft, setDraft] = useState(config);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const isLoading = configLoadState === "loading";
 
   useEffect(() => setDraft(config), [config]);
 
@@ -34,8 +36,11 @@ export function SettingsPanel({
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSaving(true);
+    setSaveError("");
     try {
       await onSave(draft);
+    } catch {
+      setSaveError("保存失败，请确认本地后端已启动后再试。");
     } finally {
       setIsSaving(false);
     }
@@ -51,7 +56,11 @@ export function SettingsPanel({
           <div>
             <h2 className="text-[15px] font-semibold text-ink">API Settings</h2>
             <p className="text-[10px] text-muted">
-              {isLoading ? "Loading local API settings..." : "Keys are stored locally on this device."}
+              {isLoading
+                ? "Loading local API settings..."
+                : configLoadState === "failed"
+                  ? "Local settings did not finish loading. You can still save to retry."
+                  : "Keys are stored locally on this device."}
             </p>
           </div>
           <Button aria-label="Close settings" size="icon" variant="ghost" onClick={onClose} type="button">
@@ -128,11 +137,16 @@ export function SettingsPanel({
             Generate
           </Button>
           <div className="flex gap-2">
+            {saveError ? (
+              <span className="max-w-[170px] self-center text-right text-[10px] leading-snug text-red-300">
+                {saveError}
+              </span>
+            ) : null}
             <Button onClick={onClose} type="button" variant="ghost">
               Cancel
             </Button>
-            <Button disabled={isLoading || isSaving} type="submit" variant="primary">
-              {isSaving ? "Saving..." : isLoading ? "Loading..." : "Save"}
+            <Button disabled={isSaving} type="submit" variant="primary">
+              {isSaving ? "Saving..." : "Save"}
             </Button>
           </div>
         </div>

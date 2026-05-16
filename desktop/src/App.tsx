@@ -10,6 +10,7 @@ import { WindowControls } from "@/components/WindowControls";
 import { emptyStation, type ChatMessage, type Station } from "@/radioData";
 
 type ThemeMode = "light" | "dark";
+type ConfigLoadState = "loading" | "ready" | "failed";
 
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat("en", {
@@ -63,6 +64,16 @@ function toUserFacingError(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise
+      .then(resolve)
+      .catch(reject)
+      .finally(() => window.clearTimeout(timer));
+  });
+}
+
 export function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const hasBootstrappedRef = useRef(false);
@@ -82,7 +93,7 @@ export function App() {
   const [isAdapting, setIsAdapting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<ApiSettings>(defaultSettings);
-  const [hasLoadedConfig, setHasLoadedConfig] = useState(false);
+  const [configLoadState, setConfigLoadState] = useState<ConfigLoadState>("loading");
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [apiError, setApiError] = useState("");
@@ -213,7 +224,7 @@ export function App() {
   const handleSendMessage = useCallback(
     (text: string) => {
       const cleanText = text.trim();
-      if (!cleanText || isAdapting || requestInFlightRef.current || !hasLoadedConfig) {
+      if (!cleanText || isAdapting || requestInFlightRef.current || configLoadState !== "ready") {
         return;
       }
       requestInFlightRef.current = true;
@@ -246,14 +257,22 @@ export function App() {
           setIsAdapting(false);
         });
     },
-    [applyRemoteStation, deviceLocation, hasLoadedConfig, isAdapting],
+    [applyRemoteStation, configLoadState, deviceLocation, isAdapting],
   );
 
   async function handleSaveSettings(nextSettings: ApiSettings) {
-    const response = await saveConfig(nextSettings);
-    setSettings(response.config);
-    setRuntime(response.runtime);
-    setIsSettingsOpen(false);
+    setApiError("");
+    try {
+      const response = await saveConfig(nextSettings);
+      setSettings(response.config);
+      setRuntime(response.runtime);
+      setConfigLoadState("ready");
+      setIsSettingsOpen(false);
+    } catch (error) {
+      setConfigLoadState("failed");
+      setApiError(toUserFacingError(error, "保存配置失败，请确认后端已启动后再试。"));
+      throw error;
+    }
   }
 
   const toggleTheme = useCallback(() => {
@@ -272,13 +291,14 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
-    loadConfig()
+    withTimeout(loadConfig(), 35_000, "读取配置超时")
       .then((response) => {
         setSettings(response.config);
         setRuntime(response.runtime);
-        setHasLoadedConfig(true);
+        setConfigLoadState("ready");
       })
       .catch((error: unknown) => {
+        setConfigLoadState("failed");
         setApiError(toUserFacingError(error, "读取配置失败，请稍后再试。"));
       });
   }, []);
@@ -314,7 +334,7 @@ export function App() {
 
   useEffect(() => {
     if (
-      !hasLoadedConfig ||
+      configLoadState !== "ready" ||
       hasBootstrappedRef.current ||
       locationStatus === "idle" ||
       locationStatus === "locating"
@@ -325,7 +345,7 @@ export function App() {
     requestAgentStation(
       "启动 ClownfishStudio。简单打招呼并自我介绍，然后开始此刻的电台。",
     );
-  }, [hasLoadedConfig, locationStatus, requestAgentStation]);
+  }, [configLoadState, locationStatus, requestAgentStation]);
 
   useEffect(() => {
     if (!isPlaying || currentTrack.playbackUrl) {
@@ -467,7 +487,7 @@ export function App() {
 
       <SettingsPanel
         config={settings}
-        isLoading={!hasLoadedConfig}
+        configLoadState={configLoadState}
         onClose={() => setIsSettingsOpen(false)}
         onGenerate={() => requestAgentStation("Generate a fresh station.")}
         onSave={handleSaveSettings}
