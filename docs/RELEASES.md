@@ -44,10 +44,10 @@ ClownfishStudio-0.1.0-mac-arm64.zip
 ```bash
 cd server
 python -m venv --copies .venv
-uv sync --locked --extra dev --python .venv/bin/python
+uv sync --locked --extra dev --link-mode copy --python .venv/bin/python
 uv run --locked --python .venv/bin/python pytest -q
 uv run --locked --python .venv/bin/python ruff check .
-uv sync --locked --python .venv/bin/python
+uv sync --locked --link-mode copy --python .venv/bin/python
 
 cd ../desktop
 npm ci
@@ -69,7 +69,7 @@ npx electron-builder --mac dmg zip --arm64 --publish never
 
 macOS 被拆成 Intel 和 Apple Silicon 两个 job，是因为桌面包会携带 `server/.venv`。Python 虚拟环境必须和目标平台架构一致，不能用一个 macOS runner 同时产出两种架构的后端运行时。
 
-CI 会先用 `python -m venv --copies` 创建后端虚拟环境，再让 `uv` 安装依赖。这样 macOS `.app` 中不会出现指向 GitHub runner 系统目录的 Python 符号链接。
+CI 会先用 `python -m venv --copies` 创建后端虚拟环境，再让 `uv` 以 `--link-mode copy` 安装依赖。这样 macOS `.app` 中不会出现指向 GitHub runner 或 uv 缓存目录的 Python 符号链接。
 
 ## 重要边界
 

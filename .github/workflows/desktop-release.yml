@@ -61,7 +61,7 @@ jobs:
 
       - name: Install server test dependencies
         working-directory: server
-        run: uv sync --locked --extra dev --python ${{ matrix.venv_python }}
+        run: uv sync --locked --extra dev --link-mode copy --python ${{ matrix.venv_python }}
 
       - name: Test server
         working-directory: server
@@ -71,7 +71,7 @@ jobs:
 
       - name: Install server runtime dependencies
         working-directory: server
-        run: uv sync --locked --python ${{ matrix.venv_python }}
+        run: uv sync --locked --link-mode copy --python ${{ matrix.venv_python }}
 
       - name: Set up Node
         uses: actions/setup-node@v6
