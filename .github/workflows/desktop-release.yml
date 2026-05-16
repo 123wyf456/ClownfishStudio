@@ -30,12 +30,12 @@ jobs:
             os: macos-15-intel
             artifact_name: macos-x64
             venv_python: .venv/bin/python
-            build_command: npx electron-builder --mac dmg zip --x64 --publish never
+            build_command: npx electron-builder --mac dmg zip --x64 --publish never -c.mac.identity=null
           - name: macOS Apple Silicon
             os: macos-15
             artifact_name: macos-arm64
             venv_python: .venv/bin/python
-            build_command: npx electron-builder --mac dmg zip --arm64 --publish never
+            build_command: npx electron-builder --mac dmg zip --arm64 --publish never -c.mac.identity=null
 
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
