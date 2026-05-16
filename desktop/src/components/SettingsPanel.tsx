@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 
 type SettingsPanelProps = {
   config: ApiSettings;
+  isLoading?: boolean;
   onClose: () => void;
   onGenerate: () => void;
   onSave: (config: ApiSettings) => Promise<void>;
@@ -14,6 +15,7 @@ type SettingsPanelProps = {
 
 export function SettingsPanel({
   config,
+  isLoading = false,
   onClose,
   onGenerate,
   onSave,
@@ -48,7 +50,9 @@ export function SettingsPanel({
         <div className="mb-3 flex items-center justify-between">
           <div>
             <h2 className="text-[15px] font-semibold text-ink">API Settings</h2>
-            <p className="text-[10px] text-muted">Keys are stored locally on this device.</p>
+            <p className="text-[10px] text-muted">
+              {isLoading ? "Loading local API settings..." : "Keys are stored locally on this device."}
+            </p>
           </div>
           <Button aria-label="Close settings" size="icon" variant="ghost" onClick={onClose} type="button">
             <X className="h-4 w-4" />
@@ -119,7 +123,7 @@ export function SettingsPanel({
         </div>
 
         <div className="mt-4 flex items-center justify-between">
-          <Button onClick={onGenerate} type="button" variant="soft">
+          <Button disabled={isLoading} onClick={onGenerate} type="button" variant="soft">
             <RefreshCw className="mr-2 h-4 w-4" />
             Generate
           </Button>
@@ -127,8 +131,8 @@ export function SettingsPanel({
             <Button onClick={onClose} type="button" variant="ghost">
               Cancel
             </Button>
-            <Button disabled={isSaving} type="submit" variant="primary">
-              {isSaving ? "Saving..." : "Save"}
+            <Button disabled={isLoading || isSaving} type="submit" variant="primary">
+              {isSaving ? "Saving..." : isLoading ? "Loading..." : "Save"}
             </Button>
           </div>
         </div>

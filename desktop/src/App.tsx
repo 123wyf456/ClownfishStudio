@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { advancePlayer, chatStation, generateStation, loadConfig, saveConfig } from "@/api/desktopApi";
-import type { ApiSettings, PlayerAdvanceReason, RuntimeStatus } from "@/api/types";
+import { defaultSettings, type ApiSettings, type PlayerAdvanceReason, type RuntimeStatus } from "@/api/types";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ContextStrip } from "@/components/ContextStrip";
 import { PlayerModule } from "@/components/PlayerModule";
@@ -81,7 +81,8 @@ export function App() {
   const [now, setNow] = useState(() => new Date());
   const [isAdapting, setIsAdapting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settings, setSettings] = useState<ApiSettings | null>(null);
+  const [settings, setSettings] = useState<ApiSettings>(defaultSettings);
+  const [hasLoadedConfig, setHasLoadedConfig] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [apiError, setApiError] = useState("");
@@ -212,7 +213,7 @@ export function App() {
   const handleSendMessage = useCallback(
     (text: string) => {
       const cleanText = text.trim();
-      if (!cleanText || isAdapting || requestInFlightRef.current || !settings) {
+      if (!cleanText || isAdapting || requestInFlightRef.current || !hasLoadedConfig) {
         return;
       }
       requestInFlightRef.current = true;
@@ -245,7 +246,7 @@ export function App() {
           setIsAdapting(false);
         });
     },
-    [applyRemoteStation, deviceLocation, isAdapting, settings],
+    [applyRemoteStation, deviceLocation, hasLoadedConfig, isAdapting],
   );
 
   async function handleSaveSettings(nextSettings: ApiSettings) {
@@ -275,6 +276,7 @@ export function App() {
       .then((response) => {
         setSettings(response.config);
         setRuntime(response.runtime);
+        setHasLoadedConfig(true);
       })
       .catch((error: unknown) => {
         setApiError(toUserFacingError(error, "读取配置失败，请稍后再试。"));
@@ -312,7 +314,7 @@ export function App() {
 
   useEffect(() => {
     if (
-      !settings ||
+      !hasLoadedConfig ||
       hasBootstrappedRef.current ||
       locationStatus === "idle" ||
       locationStatus === "locating"
@@ -323,7 +325,7 @@ export function App() {
     requestAgentStation(
       "启动 ClownfishStudio。简单打招呼并自我介绍，然后开始此刻的电台。",
     );
-  }, [locationStatus, requestAgentStation, settings]);
+  }, [hasLoadedConfig, locationStatus, requestAgentStation]);
 
   useEffect(() => {
     if (!isPlaying || currentTrack.playbackUrl) {
@@ -463,16 +465,15 @@ export function App() {
         </div>
       </motion.div>
 
-      {settings ? (
-        <SettingsPanel
-          config={settings}
-          onClose={() => setIsSettingsOpen(false)}
-          onGenerate={() => requestAgentStation("Generate a fresh station.")}
-          onSave={handleSaveSettings}
-          open={isSettingsOpen}
-          runtime={runtime}
-        />
-      ) : null}
+      <SettingsPanel
+        config={settings}
+        isLoading={!hasLoadedConfig}
+        onClose={() => setIsSettingsOpen(false)}
+        onGenerate={() => requestAgentStation("Generate a fresh station.")}
+        onSave={handleSaveSettings}
+        open={isSettingsOpen}
+        runtime={runtime}
+      />
     </main>
   );
 }
