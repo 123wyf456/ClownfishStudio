@@ -24,14 +24,17 @@ jobs:
           - name: Windows
             os: windows-latest
             artifact_name: windows
+            venv_python: .venv/Scripts/python.exe
             build_command: npx electron-builder --win portable --publish never
           - name: macOS Intel
             os: macos-15-intel
             artifact_name: macos-x64
+            venv_python: .venv/bin/python
             build_command: npx electron-builder --mac dmg zip --x64 --publish never
           - name: macOS Apple Silicon
             os: macos-15
             artifact_name: macos-arm64
+            venv_python: .venv/bin/python
             build_command: npx electron-builder --mac dmg zip --arm64 --publish never
 
     env:
@@ -52,19 +55,23 @@ jobs:
           enable-cache: true
           cache-dependency-glob: server/uv.lock
 
+      - name: Create server virtual environment
+        working-directory: server
+        run: python -m venv --copies .venv
+
       - name: Install server test dependencies
         working-directory: server
-        run: uv sync --locked --extra dev
+        run: uv sync --locked --extra dev --python ${{ matrix.venv_python }}
 
       - name: Test server
         working-directory: server
         run: |
-          uv run pytest -q
-          uv run ruff check .
+          uv run --locked --python ${{ matrix.venv_python }} pytest -q
+          uv run --locked --python ${{ matrix.venv_python }} ruff check .
 
       - name: Install server runtime dependencies
         working-directory: server
-        run: uv sync --locked
+        run: uv sync --locked --python ${{ matrix.venv_python }}
 
       - name: Set up Node
         uses: actions/setup-node@v6
