@@ -6,6 +6,19 @@ from app.core.config import ENV_FILE, get_settings
 from app.main import app
 
 
+def _capture_env_file() -> str | None:
+    if not ENV_FILE.exists():
+        return None
+    return ENV_FILE.read_text(encoding="utf-8")
+
+
+def _restore_env_file(original_env: str | None) -> None:
+    if original_env is None:
+        ENV_FILE.unlink(missing_ok=True)
+        return
+    ENV_FILE.write_text(original_env, encoding="utf-8")
+
+
 def test_get_config_returns_desktop_configuration() -> None:
     client = TestClient(app)
 
@@ -19,7 +32,7 @@ def test_get_config_returns_desktop_configuration() -> None:
 
 
 def test_legacy_deepseek_config_maps_to_openai_provider() -> None:
-    original_env = ENV_FILE.read_text(encoding="utf-8")
+    original_env = _capture_env_file()
     try:
         ENV_FILE.write_text(
             "\n".join(
@@ -52,7 +65,7 @@ def test_legacy_deepseek_config_maps_to_openai_provider() -> None:
         assert settings.openai_api_key == "legacy-deepseek-key"
         assert settings.openai_base_url == "https://api.deepseek.com"
     finally:
-        ENV_FILE.write_text(original_env, encoding="utf-8")
+        _restore_env_file(original_env)
         os.environ["RADIO_AGENT_PROVIDER"] = "mock"
         os.environ["RADIO_AGENT_MODEL"] = "test-model"
         os.environ["OPENAI_API_KEY"] = ""
@@ -60,7 +73,7 @@ def test_legacy_deepseek_config_maps_to_openai_provider() -> None:
 
 
 def test_put_config_updates_env_and_runtime_state() -> None:
-    original_env = ENV_FILE.read_text(encoding="utf-8")
+    original_env = _capture_env_file()
     client = TestClient(app)
 
     try:
@@ -109,7 +122,7 @@ def test_put_config_updates_env_and_runtime_state() -> None:
         assert "OPENWEATHER_API_KEY=" in ENV_FILE.read_text(encoding="utf-8")
         assert "NETEASE_PLAYBACK_LEVEL=exhigh" in ENV_FILE.read_text(encoding="utf-8")
     finally:
-        ENV_FILE.write_text(original_env, encoding="utf-8")
+        _restore_env_file(original_env)
         for key in [
             "RADIO_AGENT_PROVIDER",
             "RADIO_AGENT_MODEL",
