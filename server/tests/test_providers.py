@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from urllib.error import HTTPError
 
 from app.core.config import Settings
@@ -20,38 +21,58 @@ class FakeResponse:
         return False
 
 
-def test_weather_provider_is_disabled_even_when_openweather_is_configured(monkeypatch) -> None:
+def test_openweather_provider_uses_device_coordinates(monkeypatch) -> None:
     settings = Settings(
         weather_provider="openweather",
         openweather_api_key="weather-key",
     )
+    captured_url = ""
 
     def fake_urlopen(request, timeout=15):  # noqa: ANN001
-        del request, timeout
-        raise AssertionError("weather lookup should be disabled")
+        nonlocal captured_url
+        del timeout
+        captured_url = request.full_url
+        return FakeResponse(
+            json.dumps(
+                {
+                    "name": "Shanghai",
+                    "weather": [{"main": "Clouds"}],
+                    "main": {"temp": 26.5, "humidity": 72},
+                }
+            ).encode("utf-8")
+        )
 
     monkeypatch.setattr(providers_module, "urlopen", fake_urlopen)
 
     provider = providers_module.build_weather_provider(settings)
-    weather = provider.get_weather("Shanghai")
+    weather = provider.get_weather(
+        providers_module.DeviceContext(
+            local_time=datetime.fromisoformat("2026-07-10T10:00:00+08:00"),
+            timezone="Asia/Shanghai",
+            city_hint="Shanghai",
+            latitude=31.2304,
+            longitude=121.4737,
+        )
+    )
 
-    assert weather == {
-        "city": "Unknown",
-        "condition": "unknown",
-        "temperature_celsius": None,
-        "humidity": None,
-        "source": "disabled",
-    }
+    assert "lat=31.2304" in captured_url
+    assert "lon=121.4737" in captured_url
+    assert "q=Shanghai" not in captured_url
+    assert weather["city"] == "Shanghai"
+    assert weather["condition"] == "clouds"
+    assert weather["temperature_celsius"] == 26.5
+    assert weather["humidity"] == 0.72
+    assert weather["source"] == "openweather"
 
 
-def test_runtime_status_reports_weather_disabled() -> None:
+def test_runtime_status_reports_openweather_live_when_configured() -> None:
     runtime = providers_module.build_runtime_status(
         Settings(weather_provider="openweather", openweather_api_key="weather-key")
     )
 
-    assert runtime.weather.provider == "disabled"
-    assert runtime.weather.mode == "disabled"
-    assert runtime.weather.configured is False
+    assert runtime.weather.provider == "openweather"
+    assert runtime.weather.mode == "live"
+    assert runtime.weather.configured is True
 
 
 def test_fish_audio_provider_returns_text_only_on_http_error(monkeypatch, tmp_path) -> None:

@@ -1,776 +1,372 @@
 # AGENTS.md
 
-本文件用于指导 Codex 在 ClownfishStudio 仓库中进行开发。
+本文件用于指导 Codex 在 `ClownfishStudio` 仓库中进行开发。
 
-## 1. 项目定位
+如果本文件和通用行为规则冲突，优先遵循：
 
-ClownfishStudio 是一个 **Agent-First 移动端个人电台 App**，目标平台是 **iOS 和 Android**。
+1. `CLAUDE.md`
+2. 本文件
+3. 其他历史文档或注释
 
-开发时必须牢记：
+---
 
-> Agent 是推荐大脑，工具提供事实和能力，移动端负责交互和播放，后端负责 Agent 运行、数据管理和工具编排。
+## 1. 当前项目是什么
 
-本项目不应被实现成传统的“规则打分推荐系统 + LLM 文案生成器”。规则、数据库和检索工具只负责提供约束和材料，真正的场景理解、推荐方向判断、节目编排和推荐解释应由 Agent 主导。
+ClownfishStudio 当前不是移动端项目，也不是通用播放器。
 
-## 2. 推荐仓库结构
+它现在是一个：
+
+- `desktop/`：Electron + React + TypeScript 桌面客户端
+- `server/`：FastAPI + Pydantic + SQLAlchemy 本地后端
+- Agent 驱动的“陪伴式 AI 电台”
+
+核心体验不是“搜歌”，而是：
+
+> 用户像在和一个会编排节目的电台聊天，电台理解用户此刻，再决定如何回应、如何续播、如何换歌。
+
+更具体地说，ClownfishStudio 的核心能力是：
+
+- 大模型根据用户输入、天气、时间、网易云听歌偏好、聊天上下文来理解“此刻”
+- 为用户生成一个可以持续往下播放、可继续生长的歌单或电台队列
+- 在不打断电台氛围的前提下，和用户聊相关的音乐话题
+
+它不是一次性返回几个推荐结果的接口，也不是只会寒暄几句的聊天壳。
+
+当前代码已经围绕 `desktop + local FastAPI server` 运行，不要再按旧的 `mobile/Expo` 结构开发，也不要把历史蓝图当成现状。
+
+---
+
+## 2. 最高优先级产品原则
+
+ClownfishStudio 必须始终是一个 `Agent-First radio experience`。
+
+必须坚持：
+
+```text
+用户输入先交给模型理解
+工具提供事实、候选内容、播放能力
+后端负责编排上下文与安全边界
+不要用后端规则替代模型理解
+目标是生成可持续播放的电台，而不是一次性静态结果
+```
+
+这条原则高于“写更多规则看起来更稳”。
+
+如果用户说：
+
+- “我有点累，陪我放点慢一点的”
+- “别播客了，来点中文歌”
+- “刚才那种感觉挺好，再往夜一点走”
+- “我想和电台聊聊，不一定要马上换歌”
+
+后端不应该先把这些话强行拆成固定标签、固定情绪、固定意图，再把结果塞给模型。
+
+后端应该尽量保留用户原话、上下文和候选事实，让模型自己理解。
+
+---
+
+## 3. 后端边界
+
+后端应该做的事：
+
+- 收集上下文：时间、时区、城市、天气、近期会话、历史反馈、候选内容
+- 调用工具：音乐搜索、偏好读取、历史读取、TTS、配置状态
+- 维护状态：session、playlist、chat history、current item
+- 做结构化校验：Pydantic schema、候选内容引用合法性、播放数据完整性
+- 做安全兜底：模型返回非法结构时 fallback、无候选内容时明确报错
+
+后端不应该做的事：
+
+- 不要用硬编码情绪词典主导理解用户
+- 不要把聊天主流程变成规则路由器
+- 不要把“是否换歌 / 是否聊天 / 是否推荐什么”主要交给 if/else 决定
+- 不要预先把用户表达压缩成过少的标签，导致模型失真
+- 不要把 Agent 降级成“根据后端判断结果填空”
+
+允许存在的规则，只能是边界型规则：
+
+- schema 校验
+- candidate_id 必须来自工具返回
+- item_type 与 candidate content_type 必须匹配
+- 播放控制词的明确控制型命令识别
+- 空结果、超时、外部服务失败时的 fallback
+- 去重、限流、持久化、防止明显坏数据
+
+一句话：
+
+> 后端可以约束真假与结构，不能替模型决定理解与表达。
+
+---
+
+## 4. 当前仓库真实结构
+
+以当前仓库为准：
 
 ```text
 ClownfishStudio/
-├─ README.md
-├─ DESIGN.md
 ├─ AGENTS.md
-├─ mobile/
-│  ├─ app/
-│  ├─ components/
-│  ├─ features/
-│  │  ├─ radio/
-│  │  ├─ player/
-│  │  ├─ feedback/
-│  │  └─ notifications/
-│  ├─ services/
-│  ├─ store/
-│  └─ package.json
+├─ CLAUDE.md
+├─ README.md
+├─ desktop/
+│  ├─ electron/
+│  ├─ src/
+│  ├─ package.json
+│  └─ README.md
 ├─ server/
 │  ├─ app/
-│  │  ├─ api/
 │  │  ├─ agents/
-│  │  ├─ tools/
-│  │  ├─ services/
+│  │  ├─ api/
+│  │  ├─ core/
 │  │  ├─ db/
 │  │  ├─ schemas/
-│  │  └─ core/
-│  ├─ scripts/
+│  │  ├─ services/
+│  │  └─ tools/
 │  ├─ tests/
 │  └─ pyproject.toml
 └─ data/
    └─ mock/
 ```
 
-## 3. 技术栈约束
+开发时不要再引入与当前结构不一致的目录约定，比如：
 
-### Mobile
+- 不要默认创建 `mobile/`
+- 不要把服务逻辑塞进桌面端
+- 不要把 Electron 主进程逻辑塞进 FastAPI
 
-- 使用 React Native + Expo + TypeScript。
-- 状态管理优先使用 Zustand。
-- 本地缓存优先使用 AsyncStorage，后续有复杂需求再引入 SQLite。
-- 定位使用 Expo Location。
-- 推送使用 Expo Notifications。
-- 音频播放第一版可以先 mock 或使用 Expo Audio，后续再根据后台播放需求评估 React Native Track Player。
+---
 
-### Server
+## 5. 核心模块职责
 
-- 使用 Python + FastAPI。
-- 请求/响应模型使用 Pydantic。
-- 数据库 ORM 使用 SQLAlchemy。
-- 第一版数据库使用 SQLite。
-- 后续正式部署可切 PostgreSQL。
-- 配置从 `.env` 读取，不要把密钥写进代码。
+### 5.1 `server/app/agents/`
 
-### Agent
+这里是 Agent 边界。
 
-- 第一版实现 `RadioAgentRuntime`，封装模型调用和工具调用。
-- 使用结构化输出，保证返回 RadioProgram JSON。
-- Agent 输出必须经过 schema 校验。
-- Agent 不允许凭空编造歌曲、播客或播放链接。
-- Agent 只能从 tools 返回的候选内容中选择推荐项。
+职责：
 
-## 4. 开发原则
+- 构造 prompt
+- 调用模型
+- 处理结构化输出
+- 校验并补全节目结构
 
-### 通用原则
+要求：
 
-- 优先保证代码清晰、可测试、可扩展。
-- 不要一次性实现过大的功能。
-- 每次开发围绕一个清晰任务完成。
-- 所有新增模块需要有明确边界。
-- 不要把移动端、后端、Agent 逻辑混在一起。
-- 不要过早优化。
-- 不要一开始接入所有真实平台，先使用 mock tools 跑通闭环。
+- 模型必须直接看到用户原始表达、近期聊天、上下文和候选内容
+- 节目输出必须通过 schema 校验
+- 不能编造不存在的歌曲、播客或播放链接
+- 播放型 item 必须引用真实 `candidate_id`
 
-### Agent 相关原则
+### 5.2 `server/app/services/`
+
+这里是 orchestration 层。
+
+职责：
+
+- 组织工具调用
+- 汇总 context
+- 驱动 agent runtime
+- 管理 session / playlist / persistence
+
+要求：
+
+- 服务层可以协调，不要过度解释用户输入
+- 优先传递原始 message + chat history，不要提前裁剪成死板标签
+- 如果需要控制逻辑，尽量保持最小化、可替换、可回退
+
+### 5.3 `server/app/tools/`
+
+这里是事实层，不是推荐层。
+
+职责：
+
+- 搜索候选内容
+- 读取历史和偏好
+- 返回外部系统事实
+
+要求：
+
+- 工具返回结构化数据
+- 工具不做“替用户推荐什么”的主判断
+- 能返回候选就返回候选，不要在工具层做大量口味推断
+
+### 5.4 `desktop/`
+
+桌面端是体验层，不是推荐脑。
+
+职责：
+
+- 展示电台氛围
+- 聊天交互
+- 播放器控制
+- 设置与本地桥接
+
+要求：
+
+- 不要把模型逻辑搬到前端
+- 不要把推荐决策散落在 React 组件里
+- UI 应该服务“陪伴式电台”，不是做成后台管理系统或传统播放器
+
+---
+
+## 6. 聊天与推荐的设计原则
+
+用户既可以：
+
+- 和电台聊天
+- 让电台推荐音乐
+- 在聊天中顺便调节节目方向
+- 发出明确播放器命令
+
+系统最终应支持两种自然切换的状态：
+
+- 电台继续往下播放，模型持续补全和调整后续队列
+- 电台围绕当前在播内容、风格、歌手、情绪和偏好与用户聊天
+
+这几种行为可以重叠，不能强行假设一次输入只有一个意图。
+
+正确方向：
+
+- 模型理解“这一句更像聊天、调台、点歌、追问、还是控制”
+- 后端尽量保留多意图空间
+- 电台回复要短、自然、有陪伴感
+- 如果需要换歌或重排，让 Agent 根据上下文决定幅度
+- 如果用户没有要求停止，系统默认应面向“继续播下去”来组织后续内容
+
+错误方向：
+
+- “出现某个词就一定是某种 mood”
+- “出现某个词就一定 regenerate”
+- “晚上一定慢歌，下雨一定 ambient”
+- “用户问一句话，后端就替模型决定完整意图”
+
+只有明确播放器控制命令，例如：
+
+- `暂停`
+- `继续`
+- `下一首`
+- `上一首`
+- `跳过`
+
+才可以走较强的控制分支。
+
+除此之外，默认优先让模型理解。
+
+---
+
+## 7. 音乐候选与模型关系
 
 必须坚持：
 
 ```text
-Agent 主导理解和推荐
-工具提供事实和候选内容
-规则只做约束和兜底
+模型负责理解与编排
+工具负责提供可播放候选
+后端负责验证“模型只能从候选里选”
 ```
 
-不要把推荐主逻辑写成大量硬编码规则。
+因此：
 
-允许写的规则：
+- 可以让模型决定用哪些候选、怎么排序、什么时候插串场
+- 可以让模型决定是更像聊天回复，还是更像调台动作
+- 可以让模型决定如何把当前轮请求延续成后续可播放队列
+- 不可以让模型虚构歌曲
+- 不可以因为“想让结果更稳”就用后端完全替代模型选曲逻辑
 
-- schema 校验；
-- 候选内容数量限制；
-- 防止推荐不存在内容；
-- 防止重复推荐最近高频内容；
-- 工具失败兜底；
-- API 参数校验。
+如果需要改进体验，优先方向是：
 
-不建议写成固定推荐逻辑：
+- 改进 prompt
+- 改进候选质量
+- 改进上下文传递
+- 改进 fallback 体验
 
-```text
-雨天一定推荐慢歌
-夜晚一定推荐轻音乐
-疲惫一定推荐 ambient
-```
+不要优先堆硬编码规则。
 
-这些判断应该交给 Agent 综合理解。
+---
 
-## 5. 后端开发任务顺序
+## 8. 数据与状态原则
 
-### 任务 1：创建后端骨架
+当前项目有本地运行时目录概念：
 
-创建 FastAPI 项目结构：
-
-```text
-server/app/main.py
-server/app/api/
-server/app/core/config.py
-server/app/core/logging.py
-server/app/schemas/
-server/app/agents/
-server/app/tools/
-server/app/db/
-server/tests/
-```
-
-完成标准：
-
-- `uvicorn app.main:app --reload` 可以启动；
-- `/health` 返回正常；
-- 有 `.env.example`；
-- 有基础测试。
-
-### 任务 2：实现 Pydantic schema
-
-在 `server/app/schemas/` 中实现：
-
-- DeviceContext
-- UserStateInput
-- ContextSnapshot
-- UserMusicMemory
-- CandidateItem
-- ProgramItem
-- ProgramBlock
-- RadioProgram
-- FeedbackEvent
-- GenerateProgramRequest
-- GenerateProgramResponse
+- 配置从运行时 `.env` 读取
+- SQLite 数据库存放在 runtime root
+- 生成音频、缓存等都应落在 runtime data 下
 
 要求：
 
-- 类型清晰；
-- 枚举清晰；
-- 字段和 `DESIGN.md` 保持一致；
-- 添加基础单元测试。
+- 不要把真实 API key 写进代码
+- 不要把用户运行时数据写回仓库目录
+- 修改配置行为时先看 `server/app/core/config.py`
+- 修改桌面打包或运行路径时先看 Electron 对 runtime root 的处理
 
-### 任务 3：实现 mock tools
+---
 
-在 `server/app/tools/` 中实现：
+## 9. 测试与验证
 
-- weather_tool.py
-- memory_tool.py
-- history_tool.py
-- music_search_tool.py
-- podcast_search_tool.py
-- program_tool.py
-- feedback_tool.py
-
-要求：
-
-- 工具返回结构化数据；
-- mock 数据从 `data/mock/*.json` 读取；
-- 工具不做复杂推荐判断；
-- 工具函数有类型标注；
-- 添加测试。
-
-### 任务 4：实现 Radio Agent Runtime
-
-在 `server/app/agents/` 中实现：
-
-```text
-radio_agent.py
-prompts.py
-runtime.py
-```
-
-要求：
-
-- 汇总 device_context、weather、user_state、memory、history、candidate_items；
-- 调用模型生成 RadioProgram；
-- 支持 mock 模型模式，便于无 API key 时开发；
-- 输出必须通过 schema 校验；
-- Agent 推荐内容必须来自候选内容。
-
-### 任务 5：实现生成接口
-
-实现：
-
-```text
-POST /api/programs/generate
-```
-
-要求：
-
-- 接收 GenerateProgramRequest；
-- 调用 Weather Tool；
-- 调用 Memory Tool；
-- 调用 History Tool；
-- 调用 Music / Podcast Search Tool；
-- 调用 Radio Agent；
-- 保存节目；
-- 返回 GenerateProgramResponse。
-
-### 任务 6：实现反馈接口
-
-实现：
-
-```text
-POST /api/feedback
-```
-
-要求：
-
-- 保存用户反馈；
-- 更新用户记忆或生成 memory update hint；
-- 后续生成节目时能读取反馈影响。
-
-## 6. 移动端开发任务顺序
-
-### 任务 1：创建 Expo 项目
-
-要求：
-
-- 使用 TypeScript；
-- 建立基础目录；
-- 添加 API client；
-- 添加环境变量配置；
-- 能在 iOS / Android 模拟器或真机启动。
-
-### 任务 2：实现首页
-
-首页包括：
-
-- 环境摘要；
-- 心情选择；
-- 需求选择；
-- 时长选择；
-- 自由文本输入；
-- 生成电台按钮；
-- 电台结果卡片。
-
-### 任务 3：实现设备上下文采集
-
-要求：
-
-- 获取当前时间；
-- 获取时区；
-- 请求前台定位；
-- 定位失败时允许继续使用本地时间和城市 hint。
-
-### 任务 4：调用后端生成节目
-
-要求：
-
-- 构造 GenerateProgramRequest；
-- 调用 `/api/programs/generate`；
-- 展示 loading / error / success；
-- 展示 RadioProgram。
-
-### 任务 5：实现反馈按钮
-
-反馈包括：
-
-- like
-- dislike
-- skip
-- too_familiar
-- want_more_like_this
-- less_like_this
-
-## 7. 代码质量要求
-
-### Python
-
-- 使用类型标注。
-- 使用 Pydantic schema 管理输入输出。
-- 核心函数要有单元测试。
-- 工具函数要可单独测试。
-- 不要在 API 路由中堆积业务逻辑。
-- 路由只负责接收请求和调用 service/runtime。
-
-### TypeScript
-
-- API response 要定义类型。
-- 页面组件和业务逻辑分离。
-- UI 组件尽量小而清晰。
-- 不要把 API 调用直接散落在多个组件里。
-- 错误状态和 loading 状态要处理。
-
-## 8. 不要做的事情
-
-第一版不要做：
-
-- 不要同时接入多个音乐平台；
-- 不要先做复杂播放器；
-- 不要做 PC 端；
-- 不要做复杂社交功能；
-- 不要做复杂推荐打分系统；
-- 不要把 Agent 降级成文案生成器；
-- 不要让模型编造不存在的歌曲；
-- 不要把 OpenAI API key 写入前端；
-- 不要让移动端直接调用模型 API。
-
-## 9. 每次开发完成后的检查
-
-后端任务完成后运行：
+后端改动后至少运行：
 
 ```bash
+cd server
 pytest
+ruff check .
 ```
 
-如果配置了格式化和静态检查，运行：
+如果改动影响格式，再运行：
 
 ```bash
-ruff check .
+cd server
 ruff format .
 ```
 
-移动端任务完成后运行：
+桌面端改动后至少运行：
 
 ```bash
-npm run lint
-npm run typecheck
+cd desktop
+npm run build
 ```
 
-如果项目脚本暂时不存在，应先补充脚本或在提交说明中明确说明。
-
-## 10. Codex 执行方式建议
-
-每次只执行一个明确任务。推荐顺序：
-
-```text
-1. server skeleton
-2. schemas
-3. mock tools
-4. radio agent runtime
-5. generate program API
-6. feedback API
-7. mobile skeleton
-8. mobile home screen
-9. mobile context collection
-10. mobile program display
-11. feedback loop
-```
-
-每完成一个任务，都应更新 README 或必要注释，说明当前能运行到哪一步。
-
-Follow CLAUDE.md for all rules.
-
-# UI / UX Design Rules — ClownfishStudio
+如果只做文档修改，可以不跑全量测试，但要在说明里明确。
 
 ---
 
-# 1. 设计目标
+## 10. 开发时的具体偏好
 
-ClownfishStudio 不是传统播放器。
+### 10.1 Python
 
-界面目标：
+- 使用类型标注
+- 输入输出走 Pydantic schema
+- API 路由尽量薄
+- 业务逻辑放 service / agent 层
+- 小步修改，不做无关重构
 
-* 像“深夜电台”
-* 像“陪伴感”
-* 像“有人在为你编排内容”
+### 10.2 TypeScript / React
 
-避免：
+- 页面展示和数据逻辑分离
+- 不要在多个组件里重复拼装 API 请求
+- 保持组件职责单一
+- 不要为了“灵活”提前抽象过度
 
-* 复杂功能堆叠
-* 工具化界面
-* Spotify 风格信息密度
+### 10.3 文档
 
-用户打开 App 后应该：
+更新文档时以“当前真实项目”优先，不要复制旧规划。
 
-> 不需要思考，只需要进入“此刻的电台”。
+如果仓库现状和旧文档冲突：
 
----
-
-# 2. 整体设计风格
-
-## 关键词
-
-```text id="5w3k27"
-沉浸感
-柔和
-深色
-呼吸感
-留白
-低信息密度
-```
+- 以代码为准
+- 文档应明确指出当前已实现内容
+- 不要把未实现蓝图写成已存在事实
 
 ---
 
-## 推荐风格
+## 11. 当前最重要的代码判断标准
 
-* 深色背景
-* 模糊渐变（gradient blur）
-* 大卡片
-* 柔和动画
-* 慢节奏切换
-* 少按钮
+在这个仓库里，好的实现通常满足这几点：
 
----
+- 用户原话被较完整地送到模型
+- 模型拿到足够上下文，而不是被后端过度概括
+- 后端负责事实、校验和状态，不替模型做推荐理解
+- 输出依然可验证、可回退、可测试
+- 最终体验更像“一个懂你的电台”，而不是“规则系统 + LLM 包装层”
 
-## 禁止事项
+如果你准备写一段后端逻辑，请先问自己：
 
-❌ 不允许复杂列表
-❌ 不允许高密度信息流
-❌ 不允许大量文字堆积
-❌ 不允许传统播放器风格 UI
-❌ 不允许复杂导航层级
+> 这段代码是在保护边界，还是在替模型做理解？
 
----
-
-# 3. 页面结构
-
-系统只允许 3 个核心页面：
-
-```text id="syxwot"
-1. Radio（首页）
-2. Player（播放页）
-3. Chat（聊天页）
-```
-
-禁止继续增加复杂页面。
-
----
-
-# 4. Radio 页面（核心）
-
-## 页面目标
-
-用户打开 App 后：
-
-```text id="yslx7d"
-立即进入“今天的电台”
-```
-
----
-
-## 页面内容
-
-### 4.1 今日电台标题
-
-例如：
-
-```text id="tvg7e5"
-东京雨夜缓冲电台
-深夜慢速频道
-周日晚间恢复模式
-```
-
-标题必须由 Agent 生成。
-
----
-
-### 4.2 Agent 串场文案
-
-例如：
-
-```text id="jlwm9u"
-今晚有点凉，我们把节奏放慢一点。
-```
-
-特点：
-
-* 短
-* 有情绪
-* 有陪伴感
-
-禁止：
-
-❌ 长篇 AI 文案
-❌ ChatGPT 风格解释
-
----
-
-### 4.3 环境信息（弱展示）
-
-显示：
-
-```text id="yxuk2k"
-时间
-城市
-天气
-温度
-```
-
-例如：
-
-```text id="v1xk20"
-Tokyo · Rain · 18°C · 22:30
-```
-
-注意：
-
-* 小字体
-* 低强调
-* 不能抢主视觉
-
----
-
-### 4.4 节目结构卡片
-
-展示当前节目：
-
-```text id="9y5t6m"
-放慢呼吸
-夜间漂流
-最后一段柔光
-```
-
-卡片：
-
-* 大圆角
-* 半透明
-* 毛玻璃感
-
----
-
-### 4.5 主按钮
-
-只允许：
-
-```text id="o7oj9g"
-▶ Play
-🔁 Regenerate
-```
-
-不要增加复杂控制。
-
----
-
-# 5. Player 页面（重点）
-
-## 页面目标
-
-沉浸播放。
-
----
-
-## 页面内容
-
-### 5.1 当前内容
-
-显示：
-
-* 封面
-* 标题
-* 艺术家
-
----
-
-### 5.2 播放控制
-
-只保留：
-
-```text id="j7z0mc"
-上一首
-播放/暂停
-下一首
-```
-
----
-
-### 5.3 Agent 串场
-
-播放 TTS 时：
-
-显示：
-
-```text id="z29w0d"
-“接下来换一点更温暖的旋律。”
-```
-
----
-
-### 5.4 用户反馈（重要）
-
-允许：
-
-```text id="wyh42h"
-❤️ 喜欢
-⏭ 跳过
-✨ 更多这种
-```
-
-禁止复杂评分系统。
-
----
-
-# 6. Chat 页面
-
-## 页面目标
-
-用户可以“和电台聊天”。
-
----
-
-## 输入示例
-
-```text id="wzv1lk"
-我现在有点累
-想听安静一点
-不要播客
-来点雨夜感觉
-```
-
----
-
-## Agent 行为
-
-Agent 必须：
-
-* 理解需求
-* 重新生成节目
-* 改变后续 segment
-
----
-
-## UI 风格
-
-聊天必须：
-
-* 极简
-* 不像客服
-* 不像 ChatGPT
-
-更像：
-
-```text id="wjlwmg"
-“正在和电台交流”
-```
-
----
-
-# 7. 动画规则
-
-动画必须：
-
-```text id="y19t5n"
-慢
-柔和
-低刺激
-```
-
-推荐：
-
-* fade
-* blur transition
-* gradient movement
-
-禁止：
-
-❌ 高频动画
-❌ 弹跳效果
-❌ 游戏化效果
-
----
-
-# 8. 色彩规则
-
-推荐：
-
-```text id="g2krx9"
-深灰
-黑色
-蓝灰
-暖橙
-柔和紫色
-```
-
-避免：
-
-```text id="jowcf7"
-高饱和
-纯白
-纯黑
-荧光色
-```
-
----
-
-# 9. 字体规则
-
-推荐：
-
-```text id="7f4gnr"
-Inter
-SF Pro
-Noto Sans
-```
-
-特点：
-
-* 简洁
-* 现代
-* 有呼吸感
-
----
-
-# 10. 适配平台
-
-必须：
-
-* 适配 iOS / Android / Windows
-
----
-
-# 11. 音频体验规则
-
-音乐和 TTS 的切换必须：
-
-```text id="az0azl"
-平滑
-低突兀
-低延迟
-```
-
-建议：
-
-* fade in/out
-* 音量渐变
-
----
-
-# 12. 核心体验原则（最高优先级）
-
-ClownfishStudio 的体验必须始终围绕：
-
-> “有人正在为你实时编排一档电台节目”
-
-而不是：
-
-❌ 音乐库
-❌ 歌单管理器
-❌ 搜索型播放器
-
----
-
-# 13. UI 成功标准
-
-用户打开 App 后：
-
-* 能立刻感受到“电台氛围”
-* 不需要思考操作
-* 感觉内容是“为此刻生成”
-* 感觉 Agent 在陪伴自己
-
----
-
-# 14. 最终一句话
-
-ClownfishStudio 的 UI 不是“功能界面”。
-
-而是：
-
-> 一个有陪伴感、有情绪氛围的 AI 电台空间。
+如果是后者，默认应该收回。

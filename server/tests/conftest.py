@@ -18,7 +18,6 @@ def pytest_configure() -> None:
 def pytest_runtest_setup() -> None:
     from app.services import session_store, station_orchestrator
     from app.tools import feedback_tool, history_tool, program_tool
-    from app.tools.netease_music_tool import _PREFERENCE_CACHE
 
     feedback_tool._SAVED_FEEDBACK_EVENTS = None
     feedback_tool._SAVED_MEMORY_UPDATE_HINTS = None
@@ -26,5 +25,4 @@ def pytest_runtest_setup() -> None:
     program_tool._SAVED_PROGRAMS = None
     session_store.clear_station_session_store()
     station_orchestrator._USER_GENERATION_LOCKS.clear()
-    _PREFERENCE_CACHE.clear()
     get_settings.cache_clear()

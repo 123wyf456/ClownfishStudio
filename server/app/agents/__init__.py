@@ -2,7 +2,6 @@
 
 from app.agents.radio_agent import (
     AnthropicRadioModelClient,
-    ChatTurnDecision,
     MockRadioModelClient,
     OpenAIResponsesRadioModelClient,
     RadioAgentInput,
@@ -22,7 +21,6 @@ __all__ = [
     "AgentOutputValidationError",
     "AnthropicRadioModelClient",
     "AnthropicSongRequestPlanner",
-    "ChatTurnDecision",
     "MockRadioModelClient",
     "MockSongRequestPlanner",
     "OpenAIResponsesRadioModelClient",

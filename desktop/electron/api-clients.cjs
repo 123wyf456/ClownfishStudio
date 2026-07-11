@@ -81,6 +81,7 @@ function createDesktopApi({ app, runtimeRoot, writeLog }) {
       agentProvider: payload?.agentProvider,
       hasAgentKey: Boolean(payload?.agentApiKey),
       hasTtsKey: Boolean(payload?.fishAudioApiKey),
+      hasWeatherKey: Boolean(payload?.openweatherApiKey),
       hasNeteaseCookie: Boolean(payload?.neteaseCookie),
     });
     const remotePayload = {
@@ -98,8 +99,8 @@ function createDesktopApi({ app, runtimeRoot, writeLog }) {
       feishu_app_id: "",
       feishu_app_secret: "",
       feishu_calendar_id: "",
-      weather_provider: "disabled",
-      openweather_api_key: "",
+      weather_provider: payload.openweatherApiKey ? "openweather" : "disabled",
+      openweather_api_key: payload.openweatherApiKey,
       openweather_base_url: payload.openweatherBaseUrl,
       netease_api_base_url: payload.neteaseApiBaseUrl,
       netease_cookie: payload.neteaseCookie,
@@ -383,6 +384,17 @@ async function normalizeStationResponse(payload, localConfig, musicDir) {
       chatReply: payload?.reply?.text || "",
       greeting: session?.greeting || "",
       sessionId: session?.session_id || "",
+      events: Array.isArray(session?.events)
+        ? session.events
+          .filter((event) => event && typeof event === "object")
+          .map((event, index) => ({
+            id: event.event_id || `event-${index}`,
+            type: event.event_type || "unknown",
+            payload:
+              event.payload && typeof event.payload === "object" ? event.payload : {},
+            createdAt: event.created_at || "",
+          }))
+        : [],
     },
     runtime: mapRuntime(payload?.runtime),
     warnings: Array.isArray(session?.warnings)

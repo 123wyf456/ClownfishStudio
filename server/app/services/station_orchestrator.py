@@ -1,24 +1,19 @@
 from __future__ import annotations
 
-import hashlib
 import logging
-import re
 from threading import Lock
 from time import monotonic
-from uuid import uuid4
 
 from app.agents import RadioAgentRuntime
 from app.schemas import (
-    CandidateItem,
     ChatMessage,
+    ChatRouterResult,
     GenerateProgramRequest,
     GenerateProgramResponse,
     PlayerAdvanceRequest,
     PlayerAdvanceResponse,
     PlayerNowResponse,
-    PlaylistItemSource,
     ProgramItem,
-    RadioProgram,
     RuntimeStatus,
     StationChatRequest,
     StationChatResponse,
@@ -27,12 +22,9 @@ from app.schemas import (
 )
 from app.services.playlist_runtime import (
     advance_playlist,
-    create_playlist_from_candidates,
     current_playlist_item,
     playlist_needs_refill,
     record_playlist_events,
-    refill_playlist,
-    retune_playlist_after_current,
 )
 from app.services.program_generation import ProgramGenerationService
 from app.services.providers import build_runtime_status
@@ -44,6 +36,31 @@ from app.services.session_store import (
     save_station_session,
     update_current_item,
 )
+from app.services.station_chat_planner import (
+    build_initial_chat_user_state,
+    build_router_request_text,
+    chat_regeneration_candidate_limit,
+    fallback_chat_router_result,
+    requires_real_music_candidates,
+    router_has_content,
+    router_log_label,
+)
+from app.services.station_events import append_session_event
+from app.services.station_reply_presenter import (
+    build_reply_metadata,
+    compact_agent_reply,
+    control_reply,
+    fallback_chat_reply,
+)
+from app.services.station_session_mutations import (
+    apply_chat_control,
+    build_initial_session,
+    retune_session_playlist,
+)
+from app.services.station_session_mutations import (
+    apply_refill_generation as apply_refill_generation_to_state,
+)
+from app.services.station_tts import synthesize_session_text
 
 LOGGER = logging.getLogger(__name__)
 _LOCKS_LOCK = Lock()
@@ -79,51 +96,32 @@ class StationOrchestrator:
         )
         timings["program_generation"] = monotonic() - started_at
 
-        weather = generation.program.context_snapshot.weather
-        calendar_events = generation.program.context_snapshot.calendar_events
-
         step_started_at = monotonic()
-        greeting = _compact_agent_reply(
+        greeting = compact_agent_reply(
             _opening_narration(generation.program) or generation.program.summary,
             fallback_message=request.user_state.free_text or "",
         )
         timings["derive_greeting"] = monotonic() - step_started_at
 
-        session_warnings = [*generation.warnings]
-        selected_candidates = _program_music_candidates(
-            program=generation.program,
-            candidate_items=generation.candidate_items,
-        )
-        if not selected_candidates:
-            selected_candidates = _music_candidates(generation.candidate_items)
-        playlist = create_playlist_from_candidates(
-            selected_candidates,
-            inserted_by=PlaylistItemSource.initial,
-        )
-        if len(playlist.items) < playlist.target_size:
-            session_warnings.append(
-                "Only part of the initial playlist could be filled with playable music."
-            )
-
-        session = StationSession(
-            session_id=f"session-{uuid4().hex}",
+        session = build_initial_session(
             user_id=request.user_id,
             greeting=greeting,
-            tts_text=None,
-            tts_audio_url=None,
-            program=generation.program.model_copy(
-                update={
-                    "context_snapshot": generation.program.context_snapshot.model_copy(
-                        update={"calendar_events": calendar_events, "weather": weather}
-                    )
-                }
-            ),
-            playlist=playlist,
-            weather=weather,
-            calendar_events=calendar_events,
-            warnings=session_warnings,
+            program=generation.program,
+            candidate_items=generation.candidate_items,
+            generation_warnings=generation.warnings,
         )
-        current_item = current_playlist_item(playlist)
+        session = synthesize_session_text(session=session, text=greeting)
+        session = append_session_event(
+            session,
+            event_type="reply_generated",
+            payload={
+                "reply_kind": "greeting",
+                "reply_source": "agent",
+                "playlist_changed": bool(session.playlist and session.playlist.items),
+            },
+            event_id=f"reply-{request.user_id}-greeting",
+        )
+        current_item = current_playlist_item(session.playlist)
 
         step_started_at = monotonic()
         save_station_session(
@@ -164,15 +162,28 @@ class StationOrchestrator:
 
         user_message = ChatMessage(role="user", text=request.message)
         if state is None:
+            step_started_at = monotonic()
+            pending_session = StationSession(
+                session_id="pending",
+                user_id=request.user_id,
+                greeting="pending",
+            )
+            router = self._plan_chat_turn_with_fallback(
+                session=pending_session,
+                message=request.message,
+                chat_history=[user_message],
+            )
+            route_label = router_log_label(router)
+            timings["agent_router"] = monotonic() - step_started_at
+
             session_response = self._generate_station_unlocked(
                 GenerateProgramRequest(
                     user_id=request.user_id,
                     device_context=request.device_context,
-                    user_state={
-                        "duration_minutes": 25,
-                        "needs": ["companionship"],
-                        "free_text": request.message,
-                    },
+                    user_state=build_initial_chat_user_state(
+                        message=request.message,
+                        router=router,
+                    ),
                     max_candidates=8,
                 ),
                 chat_history=[user_message],
@@ -183,13 +194,56 @@ class StationOrchestrator:
             chat_history = list_chat_history(request.user_id)
             timings["append_user_message"] = monotonic() - step_started_at
 
-            reply_text = _compact_agent_reply(
-                session_response.session.greeting,
-                fallback_message=request.message,
-            )
-            timings["agent_chat_reply"] = 0.0
+            step_started_at = monotonic()
+            if router.need_control and not router_has_content(router):
+                reply_text = compact_agent_reply(
+                    control_reply(
+                        action=router.control_action,
+                        message=request.message,
+                        has_session=False,
+                    ),
+                    fallback_message=request.message,
+                )
+            else:
+                reply_text = self._generate_dj_reply_with_fallback(
+                    session=session_response.session,
+                    message=request.message,
+                    chat_history=chat_history,
+                    router=router,
+                    fallback=session_response.session.greeting,
+                )
+            timings["agent_chat_reply"] = monotonic() - step_started_at
 
             reply = ChatMessage(role="assistant", text=reply_text)
+            reply.metadata = build_reply_metadata(
+                reply_kind=_reply_kind_from_router(router),
+                reply_source=(
+                    "control" if router.need_control and not router_has_content(router) else "agent"
+                ),
+                playlist_changed=bool(session_response.session.playlist),
+                event_id=f"reply-{request.user_id}-created",
+            )
+            refreshed_session = synthesize_session_text(
+                session=session_response.session,
+                text=reply_text,
+            )
+            refreshed_session = append_session_event(
+                refreshed_session,
+                event_type="reply_generated",
+                payload={
+                    "reply_kind": reply.metadata.reply_kind,
+                    "reply_source": reply.metadata.reply_source,
+                    "playlist_changed": reply.metadata.playlist_changed,
+                },
+                event_id=reply.metadata.event_id,
+            )
+            save_station_session(
+                StationSessionState(
+                    session=refreshed_session,
+                    chat_history=chat_history,
+                    current_item=current_playlist_item(refreshed_session.playlist),
+                )
+            )
             step_started_at = monotonic()
             append_chat_message(request.user_id, reply)
             timings["append_agent_reply"] = monotonic() - step_started_at
@@ -202,8 +256,9 @@ class StationOrchestrator:
 
             timings["total"] = monotonic() - started_at
             LOGGER.info(
-                "station_chat_timing user_id=%s created_session=true timings=%s",
+                "station_chat_timing user_id=%s route=%s created_session=true timings=%s",
                 request.user_id,
+                route_label,
                 {key: round(value, 3) for key, value in timings.items()},
             )
             return StationChatResponse(
@@ -223,31 +278,137 @@ class StationOrchestrator:
         timings["load_chat_history"] = monotonic() - step_started_at
 
         step_started_at = monotonic()
-        chat_turn = self._plan_chat_turn_with_fallback(
+        router = self._plan_chat_turn_with_fallback(
             session=seed_session,
             message=request.message,
             chat_history=chat_history,
         )
-        intent = chat_turn.role
-        timings["agent_intent"] = monotonic() - step_started_at
+        route_label = router_log_label(router)
+        timings["agent_router"] = monotonic() - step_started_at
 
-        if intent in {"chat_only", "config_help"}:
-            reply_text = _compact_agent_reply(
-                chat_turn.text,
+        working_state = state
+        seed_session = working_state.session
+        control_reply_text: str | None = None
+        if router.need_control:
+            working_state, control_reply_text = self._apply_chat_control(
+                state=working_state,
+                chat_history=chat_history,
+                router=router,
+                message=request.message,
+            )
+            seed_session = working_state.session
+
+        if router.need_control and not router_has_content(router):
+            reply_text = compact_agent_reply(
+                control_reply_text
+                or control_reply(
+                    action=router.control_action,
+                    message=request.message,
+                    has_session=True,
+                ),
                 fallback_message=request.message,
             )
             timings["agent_chat_reply"] = 0.0
 
             reply = ChatMessage(role="assistant", text=reply_text)
+            reply.metadata = build_reply_metadata(
+                reply_kind="control",
+                reply_source="control",
+                playlist_changed=True,
+                event_id=f"reply-{request.user_id}-control",
+            )
+            refreshed_session = synthesize_session_text(
+                session=working_state.session,
+                text=reply_text,
+            )
+            refreshed_session = append_session_event(
+                refreshed_session,
+                event_type="reply_generated",
+                payload={
+                    "reply_kind": reply.metadata.reply_kind,
+                    "reply_source": reply.metadata.reply_source,
+                    "playlist_changed": reply.metadata.playlist_changed,
+                },
+                event_id=reply.metadata.event_id,
+            )
+            save_station_session(
+                StationSessionState(
+                    session=refreshed_session,
+                    chat_history=chat_history,
+                    current_item=current_playlist_item(refreshed_session.playlist),
+                )
+            )
+            working_state = StationSessionState(
+                session=refreshed_session,
+                chat_history=working_state.chat_history,
+                current_item=working_state.current_item,
+            )
             step_started_at = monotonic()
             append_chat_message(request.user_id, reply)
             timings["append_agent_reply"] = monotonic() - step_started_at
 
             timings["total"] = monotonic() - started_at
             LOGGER.info(
-                "station_chat_timing user_id=%s intent=%s regenerated=false timings=%s",
+                "station_chat_timing user_id=%s route=%s regenerated=false timings=%s",
                 request.user_id,
-                intent,
+                route_label,
+                {key: round(value, 3) for key, value in timings.items()},
+            )
+            return StationChatResponse(
+                reply=reply,
+                session=working_state.session,
+                runtime=self.runtime_status(),
+            )
+
+        if not router.need_music:
+            step_started_at = monotonic()
+            reply_text = self._generate_dj_reply_with_fallback(
+                session=seed_session,
+                message=request.message,
+                chat_history=chat_history,
+                router=router,
+                fallback=fallback_chat_reply(message=request.message, router=router),
+            )
+            timings["agent_chat_reply"] = monotonic() - step_started_at
+
+            reply = ChatMessage(role="assistant", text=reply_text)
+            reply.metadata = build_reply_metadata(
+                reply_kind=_reply_kind_from_router(router),
+                reply_source="agent",
+                playlist_changed=False,
+                event_id=f"reply-{request.user_id}-chat",
+            )
+            refreshed_session = synthesize_session_text(
+                session=seed_session,
+                text=reply_text,
+            )
+            refreshed_session = append_session_event(
+                refreshed_session,
+                event_type="reply_generated",
+                payload={
+                    "reply_kind": reply.metadata.reply_kind,
+                    "reply_source": reply.metadata.reply_source,
+                    "playlist_changed": reply.metadata.playlist_changed,
+                },
+                event_id=reply.metadata.event_id,
+            )
+            save_station_session(
+                StationSessionState(
+                    session=refreshed_session,
+                    chat_history=chat_history,
+                    current_item=current_playlist_item(refreshed_session.playlist),
+                )
+            )
+            seed_session = refreshed_session
+            step_started_at = monotonic()
+            append_chat_message(request.user_id, reply)
+            timings["append_agent_reply"] = monotonic() - step_started_at
+
+            timings["total"] = monotonic() - started_at
+            LOGGER.info(
+                "station_chat_timing user_id=%s route=%s regenerated=false timings=%s",
+                request.user_id,
+                route_label,
                 {key: round(value, 3) for key, value in timings.items()},
             )
             return StationChatResponse(
@@ -267,89 +428,87 @@ class StationOrchestrator:
                 user_id=request.user_id,
                 device_context=request.device_context,
                 user_state=(
-                    previous_user_state.model_copy(update={"free_text": request.message.strip()})
+                    previous_user_state.model_copy(
+                        update={"free_text": build_router_request_text(request.message, router)}
+                    )
                     if previous_user_state is not None
                     else {
                         "duration_minutes": 25,
                         "needs": ["companionship"],
-                        "free_text": request.message.strip(),
+                        "free_text": build_router_request_text(request.message, router),
                     }
                 ),
-                max_candidates=_chat_regeneration_candidate_limit(intent),
+                max_candidates=chat_regeneration_candidate_limit(
+                    message=request.message,
+                    router=router,
+                ),
             ),
             chat_history=chat_history,
         )
         timings["collect_retune_candidates"] = monotonic() - step_started_at
-        if intent == "song_request" and not _has_real_music_candidates(
-            generation.candidate_items
-        ):
+        if requires_real_music_candidates(
+            message=request.message,
+            router=router,
+        ) and not _has_real_music_candidates(generation.candidate_items):
             raise NoSuitableSongError(
                 "没有找到符合这个需求的真实歌曲。可以换一个歌名、歌手，或把描述说得更具体一点。"
             )
 
-        playlist = seed_session.playlist
-        if playlist is None:
-            playlist = create_playlist_from_candidates(
-                _program_music_candidates(
-                    program=generation.program,
-                    candidate_items=generation.candidate_items,
-                ),
-                inserted_by=PlaylistItemSource.user_request,
-            )
-            mutation_warnings: list[str] = []
-        else:
-            mutation = retune_playlist_after_current(
-                playlist,
-                _program_music_candidates(
-                    program=generation.program,
-                    candidate_items=generation.candidate_items,
-                ),
-            )
-            playlist = mutation.playlist
-            mutation_warnings = mutation.warnings
-            if mutation.dropped_items:
-                record_playlist_events(
-                    user_id=request.user_id,
-                    items=mutation.dropped_items,
-                    event_type="dropped",
-                )
-            if mutation.inserted_items:
-                record_playlist_events(
-                    user_id=request.user_id,
-                    items=mutation.inserted_items,
-                    event_type="inserted",
-                )
-
-        updated_session = seed_session.model_copy(
-            update={
-                "greeting": _compact_agent_reply(
-                    chat_turn.text,
-                    fallback_message=request.message,
-                ),
-                "playlist": playlist,
-                "warnings": [
-                    *seed_session.warnings,
-                    *generation.warnings,
-                    *mutation_warnings,
-                ],
-            }
+        updated_session = retune_session_playlist(
+            session=seed_session,
+            message=request.message,
+            router=router,
+            program=generation.program,
+            candidate_items=generation.candidate_items,
+            generation_warnings=generation.warnings,
         )
         save_station_session(
             StationSessionState(
                 session=updated_session,
                 chat_history=chat_history,
-                current_item=current_playlist_item(playlist),
+                current_item=current_playlist_item(updated_session.playlist),
             )
         )
         timings["retune_playlist"] = monotonic() - step_started_at
 
-        reply_text = _compact_agent_reply(
-            chat_turn.text,
-            fallback_message=request.message,
+        step_started_at = monotonic()
+        reply_text = self._generate_dj_reply_with_fallback(
+            session=updated_session,
+            message=request.message,
+            chat_history=chat_history,
+            router=router,
+            fallback=fallback_chat_reply(message=request.message, router=router),
         )
-        timings["agent_chat_reply"] = 0.0
+        timings["agent_chat_reply"] = monotonic() - step_started_at
 
         reply = ChatMessage(role="assistant", text=reply_text)
+        reply.metadata = build_reply_metadata(
+            reply_kind=_reply_kind_from_router(router),
+            reply_source="agent",
+            playlist_changed=True,
+            event_id=f"reply-{request.user_id}-retune",
+        )
+        refreshed_session = synthesize_session_text(
+            session=updated_session,
+            text=reply_text,
+        )
+        refreshed_session = append_session_event(
+            refreshed_session,
+            event_type="reply_generated",
+            payload={
+                "reply_kind": reply.metadata.reply_kind,
+                "reply_source": reply.metadata.reply_source,
+                "playlist_changed": reply.metadata.playlist_changed,
+            },
+            event_id=reply.metadata.event_id,
+        )
+        save_station_session(
+            StationSessionState(
+                session=refreshed_session,
+                chat_history=chat_history,
+                current_item=current_playlist_item(refreshed_session.playlist),
+            )
+        )
         step_started_at = monotonic()
         append_chat_message(request.user_id, reply)
         timings["append_agent_reply"] = monotonic() - step_started_at
@@ -362,9 +521,9 @@ class StationOrchestrator:
 
         timings["total"] = monotonic() - started_at
         LOGGER.info(
-            "station_chat_timing user_id=%s intent=%s regenerated=true timings=%s",
+            "station_chat_timing user_id=%s route=%s regenerated=true timings=%s",
             request.user_id,
-            intent,
+            route_label,
             {key: round(value, 3) for key, value in timings.items()},
         )
         return StationChatResponse(
@@ -456,24 +615,22 @@ class StationOrchestrator:
         if playlist_needs_refill(advanced_playlist):
             warnings.append("Playlist refill is needed and can be prepared in the background.")
 
-        playlist = advanced_playlist
         state = StationSessionState(
-            session=state.session.model_copy(update={"playlist": playlist}),
+            session=state.session.model_copy(update={"playlist": advanced_playlist}),
             chat_history=state.chat_history,
-            current_item=current_playlist_item(playlist),
+            current_item=current_playlist_item(advanced_playlist),
         )
-
         save_station_session(state)
 
-        current_item = current_playlist_item(playlist)
+        current_item = current_playlist_item(advanced_playlist)
         if current_item is not None:
             update_current_item(user_id, current_item)
 
         return PlayerAdvanceResponse(
             session=state.session,
             current_item=current_item,
-            queue=playlist.items,
-            playlist=playlist,
+            queue=advanced_playlist.items,
+            playlist=advanced_playlist,
             runtime=self.runtime_status(),
             warnings=warnings,
         )
@@ -606,39 +763,12 @@ class StationOrchestrator:
         if generation is None:
             return state, generation_warnings
 
-        mutation = refill_playlist(
-            playlist,
-            _program_music_candidates(
-                program=generation.program,
-                candidate_items=generation.candidate_items,
-            ),
+        return apply_refill_generation_to_state(
+            state=state,
+            program=generation.program,
+            candidate_items=generation.candidate_items,
+            generation_warnings=generation_warnings,
         )
-        if mutation.dropped_items:
-            record_playlist_events(
-                user_id=state.session.user_id,
-                items=mutation.dropped_items,
-                event_type="dropped",
-            )
-        if mutation.inserted_items:
-            record_playlist_events(
-                user_id=state.session.user_id,
-                items=mutation.inserted_items,
-                event_type="inserted",
-            )
-
-        warnings = [*generation_warnings, *mutation.warnings]
-        updated_state = StationSessionState(
-            session=state.session.model_copy(
-                update={
-                    "playlist": mutation.playlist,
-                    "warnings": [*state.session.warnings, *warnings],
-                }
-            ),
-            chat_history=state.chat_history,
-            current_item=current_playlist_item(mutation.playlist),
-        )
-        save_station_session(updated_state)
-        return updated_state, warnings
 
     def _plan_chat_turn_with_fallback(
         self,
@@ -646,25 +776,59 @@ class StationOrchestrator:
         session: StationSession,
         message: str,
         chat_history: list[ChatMessage],
-    ) -> ChatMessage:
+    ) -> ChatRouterResult:
         try:
-            decision = self._runtime.plan_chat_turn(
+            return self._runtime.plan_chat_turn(
                 session=session,
                 message=message,
                 chat_history=chat_history,
             )
-            return ChatMessage(role=decision.intent, text=decision.reply_text)
         except Exception as exc:
             LOGGER.warning(
-                "station_chat_turn_failed user_id=%s error=%s",
+                "station_chat_router_failed user_id=%s error=%s",
                 session.user_id,
                 exc,
             )
-            intent = _classify_chat_intent(message)
-            return ChatMessage(
-                role=intent,
-                text=_fallback_chat_reply(message=message, intent=intent),
+            return fallback_chat_router_result(message)
+
+    def _generate_dj_reply_with_fallback(
+        self,
+        *,
+        session: StationSession,
+        message: str,
+        chat_history: list[ChatMessage],
+        router: ChatRouterResult,
+        fallback: str,
+    ) -> str:
+        try:
+            reply = self._runtime.generate_chat_reply(
+                session=session,
+                message=message,
+                chat_history=chat_history,
             )
+        except Exception as exc:
+            LOGGER.warning(
+                "station_dj_reply_failed user_id=%s error=%s",
+                session.user_id,
+                exc,
+            )
+            reply = fallback or fallback_chat_reply(message=message, router=router)
+        return compact_agent_reply(reply, fallback_message=message)
+
+    def _apply_chat_control(
+        self,
+        *,
+        state: StationSessionState,
+        chat_history: list[ChatMessage],
+        router: ChatRouterResult,
+        message: str,
+    ) -> tuple[StationSessionState, str]:
+        return apply_chat_control(
+            state=state,
+            chat_history=chat_history,
+            router=router,
+            message=message,
+        )
 
 
 def _first_playable_item(items: list[ProgramItem]) -> ProgramItem | None:
@@ -674,45 +838,12 @@ def _first_playable_item(items: list[ProgramItem]) -> ProgramItem | None:
     return None
 
 
-def _program_music_candidates(
-    *,
-    program: RadioProgram,
-    candidate_items: list[CandidateItem],
-) -> list[CandidateItem]:
-    candidates_by_id = {candidate.candidate_id: candidate for candidate in candidate_items}
-    selected_candidates: list[CandidateItem] = []
-    seen_candidate_ids: set[str] = set()
-
-    for block in program.blocks:
-        for item in block.items:
-            if item.item_type != "music" or item.candidate_id is None:
-                continue
-            if item.candidate_id in seen_candidate_ids:
-                continue
-            candidate = candidates_by_id.get(item.candidate_id)
-            if candidate is None:
-                continue
-            selected_candidates.append(candidate)
-            seen_candidate_ids.add(item.candidate_id)
-
-    if len(selected_candidates) >= min(8, len(_music_candidates(candidate_items))):
-        return selected_candidates
-
-    selected_candidates.extend(
-        candidate
-        for candidate in _music_candidates(candidate_items)
-        if candidate.candidate_id not in seen_candidate_ids
-    )
-    return selected_candidates
-
-
-def _music_candidates(candidate_items: list[CandidateItem]) -> list[CandidateItem]:
-    return [candidate for candidate in candidate_items if candidate.content_type == "music"]
-
-
-def _has_real_music_candidates(candidate_items: list[CandidateItem]) -> bool:
+def _has_real_music_candidates(candidate_items: object) -> bool:
+    if not isinstance(candidate_items, list):
+        return False
     return any(
-        candidate.content_type == "music" and not candidate.source.lower().startswith("mock")
+        getattr(candidate, "content_type", None) == "music"
+        and not str(getattr(candidate, "source", "")).lower().startswith("mock")
         for candidate in candidate_items
     )
 
@@ -728,134 +859,6 @@ def _opening_narration(program: object) -> str | None:
     return None
 
 
-def _classify_chat_intent(message: str) -> str:
-    text = message.strip().lower()
-    if not text:
-        return "chat_only"
-
-    if _contains_any(
-        text,
-        [
-            "api key",
-            "apikey",
-            "配置",
-            "设置",
-            "key",
-            "netease",
-            "网易云",
-            "anthropic",
-            "fish audio",
-        ],
-    ):
-        return "config_help"
-
-    if _contains_any(
-        text,
-        [
-            "播放",
-            "来点",
-            "来一首",
-            "想听",
-            "推荐",
-            "歌手",
-            "这首",
-            "歌曲",
-            "music",
-            "song",
-            "artist",
-            "play ",
-            "listen to",
-            "recommend",
-        ],
-    ):
-        return "song_request"
-
-    if _contains_any(
-        text,
-        [
-            "换",
-            "重生成",
-            "重新生成",
-            "重新",
-            "调整",
-            "调成",
-            "更安静",
-            "更热闹",
-            "更轻松",
-            "不要播客",
-            "regenerate",
-            "retune",
-            "change",
-            "make it",
-            "no podcast",
-        ],
-    ):
-        return "retune_program"
-
-    return "chat_only"
-
-
-def _contains_any(text: str, values: list[str]) -> bool:
-    return any(value in text for value in values)
-
-
-def _fallback_chat_reply(message: str, intent: str) -> str:
-    if _prefer_chinese(message):
-        variants = {
-            "config_help": ["可以，我先看配置。", "好，我们先理顺设置。"],
-            "song_request": ["好，我按这个方向找歌。", "这个口味我接住了。"],
-            "retune_program": ["好，后面我换个走向。", "嗯，我把节奏调一下。"],
-            "chat_only": ["我在，先陪你听着。", "嗯，我们慢慢来。"],
-        }
-    else:
-        variants = {
-            "config_help": ["Sure, I will check setup first.", "Let us sort settings first."],
-            "song_request": [
-                "Got it, I will look that way.",
-                "I hear the taste; next set follows.",
-            ],
-            "retune_program": ["Okay, I will shift the next stretch.", "I will retune the pacing."],
-            "chat_only": ["I am here; we can keep listening.", "Yeah, let us take it slowly."],
-        }
-    return _stable_variant(variants.get(intent) or variants["chat_only"], f"{intent}:{message}")
-
-
-def _prefer_chinese(value: str) -> bool:
-    chinese_count = len(re.findall(r"[\u4e00-\u9fff]", value))
-    ascii_word_count = len(re.findall(r"[A-Za-z]{2,}", value))
-    return chinese_count > 0 and chinese_count >= ascii_word_count
-
-
-def _compact_agent_reply(text: str, fallback_message: str) -> str:
-    normalized = " ".join(text.split()).strip()
-    if not normalized:
-        return _fallback_chat_reply(message=fallback_message, intent="chat_only")
-    if _prefer_chinese(fallback_message) and not _prefer_chinese(normalized):
-        return _fallback_chat_reply(message=fallback_message, intent="chat_only")
-
-    first_sentence = re.split(r"(?<=[。！？.!?])\s*", normalized, maxsplit=1)[0].strip()
-    if first_sentence:
-        normalized = first_sentence
-
-    prefer_chinese = _prefer_chinese(fallback_message) or _prefer_chinese(normalized)
-    limit = 36 if prefer_chinese else 96
-    if len(normalized) <= limit:
-        return normalized
-    suffix = "。" if prefer_chinese else "."
-    return normalized[:limit].rstrip("，。！？,.!? ") + suffix
-
-
-def _stable_variant(values: list[str], seed: str) -> str:
-    digest = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()
-    return values[int(digest[:8], 16) % len(values)]
-
-
-def _chat_regeneration_candidate_limit(intent: str) -> int:
-    if intent == "song_request":
-        return 8
-    return 10
-
-
 def _generation_lock_for_user(user_id: str) -> Lock:
     with _LOCKS_LOCK:
         lock = _USER_GENERATION_LOCKS.get(user_id)
@@ -863,3 +866,13 @@ def _generation_lock_for_user(user_id: str) -> Lock:
             lock = Lock()
             _USER_GENERATION_LOCKS[user_id] = lock
         return lock
+
+
+def _reply_kind_from_router(router: ChatRouterResult) -> str:
+    if router.need_control:
+        return "control"
+    if router.need_info and not router.need_music:
+        return "info"
+    if router.need_music:
+        return "music"
+    return "chat"

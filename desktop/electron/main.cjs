@@ -88,6 +88,7 @@ async function startBundledServer() {
     serverWorkdir: serverPaths.serverWorkdir,
     runtimeRoot,
   });
+  const pythonPathEnv = buildServerPythonPathEnv(serverPaths.serverWorkdir);
 
   serverProcess = spawn(
     serverPaths.pythonPath,
@@ -98,6 +99,8 @@ async function startBundledServer() {
         ...process.env,
         APP_ENV: "production",
         CLOWNFISH_RUNTIME_ROOT: runtimeRoot,
+        PYTHONNOUSERSITE: "1",
+        ...(pythonPathEnv ? { PYTHONPATH: pythonPathEnv } : {}),
       },
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
@@ -160,16 +163,47 @@ function resolveBundledServerPaths() {
 
 function buildPythonCandidates(serverRoot) {
   const windowsCandidates = [
+    path.join(serverRoot, ".python", "python.exe"),
     path.join(serverRoot, ".venv", "Scripts", "python.exe"),
     path.join(serverRoot, ".venv", "Scripts", "python"),
   ];
   const posixCandidates = [
+    path.join(serverRoot, ".python", "bin", "python3"),
+    path.join(serverRoot, ".python", "bin", "python"),
     path.join(serverRoot, ".venv", "bin", "python3"),
     path.join(serverRoot, ".venv", "bin", "python"),
   ];
   return process.platform === "win32"
     ? [...windowsCandidates, ...posixCandidates]
     : [...posixCandidates, ...windowsCandidates];
+}
+
+function buildServerPythonPathEnv(serverRoot) {
+  const entries = [serverRoot, ...findVenvSitePackages(serverRoot)];
+  const existingPythonPath = process.env.PYTHONPATH;
+  if (existingPythonPath && existingPythonPath.trim()) {
+    entries.push(existingPythonPath);
+  }
+  return entries.filter(Boolean).join(path.delimiter);
+}
+
+function findVenvSitePackages(serverRoot) {
+  const venvRoot = path.join(serverRoot, ".venv");
+  const windowsSitePackages = path.join(venvRoot, "Lib", "site-packages");
+  if (fs.existsSync(windowsSitePackages)) {
+    return [windowsSitePackages];
+  }
+
+  const libRoot = path.join(venvRoot, "lib");
+  try {
+    return fs
+      .readdirSync(libRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith("python"))
+      .map((entry) => path.join(libRoot, entry.name, "site-packages"))
+      .filter((candidate) => fs.existsSync(candidate));
+  } catch {
+    return [];
+  }
 }
 
 function resolveDesktopRuntimeRoot() {

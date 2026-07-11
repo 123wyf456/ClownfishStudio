@@ -1,5 +1,6 @@
 node_modules/
 .venv/
+server/.python/
 .pytest_cache/
 .ruff_cache/
 __pycache__/

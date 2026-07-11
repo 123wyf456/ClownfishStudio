@@ -1,5 +1,8 @@
 from datetime import UTC, datetime
 
+import pytest
+
+from app.core.config import get_settings
 from app.schemas import (
     ContextSnapshot,
     FeedbackEvent,
@@ -86,6 +89,20 @@ def test_music_search_tool_reads_candidates_from_mock_json() -> None:
     assert candidates[0].content_type == "music"
 
 
+def test_music_search_reports_netease_failures_without_mock_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("NETEASE_API_BASE_URL", "http://127.0.0.1:9")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.tools.music_search_tool.search_netease_music_candidates",
+        lambda **kwargs: (_ for _ in ()).throw(
+            netease_module.NeteaseMusicToolError("NetEase API /search failed")
+        ),
+    )
+
+    with pytest.raises(netease_module.NeteaseMusicToolError, match="/search"):
+        search_music_candidates(query="Lamp", limit=5)
+
+
 def test_netease_artist_parser_supports_search_payload_shape() -> None:
     artists = _read_artists({"artists": [{"name": "Artist A"}, {"name": "Artist B"}]})
 
@@ -133,14 +150,45 @@ def test_memory_tool_merges_live_netease_memory(monkeypatch) -> None:
     assert "Lamp" in memory.favorite_artists
 
 
+def test_memory_tool_reports_netease_preference_failures(monkeypatch) -> None:
+    monkeypatch.setenv("NETEASE_API_BASE_URL", "http://127.0.0.1:9")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        netease_module,
+        "_get_preference_snapshot",
+        lambda **kwargs: (_ for _ in ()).throw(
+            netease_module.NeteaseMusicToolError("connection refused")
+        ),
+    )
+
+    with pytest.raises(netease_module.NeteaseMusicToolError, match="connection refused"):
+        get_user_music_memory("demo-user")
+
+
 def test_netease_preference_candidates_returns_list_without_configuration() -> None:
     candidates = get_netease_preference_candidates(limit=2)
 
     assert isinstance(candidates, list)
 
 
-def test_netease_json_requests_use_local_cache(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(netease_module, "NETEASE_CACHE_DIR", tmp_path)
+def test_netease_candidate_tools_report_preference_failures(monkeypatch) -> None:
+    monkeypatch.setenv("NETEASE_API_BASE_URL", "http://127.0.0.1:9")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        netease_module,
+        "_get_preference_snapshot",
+        lambda **kwargs: (_ for _ in ()).throw(
+            netease_module.NeteaseMusicToolError("connection refused")
+        ),
+    )
+
+    with pytest.raises(netease_module.NeteaseMusicToolError, match="connection refused"):
+        get_netease_preference_candidates(limit=2)
+    with pytest.raises(netease_module.NeteaseMusicToolError, match="connection refused"):
+        netease_module.get_netease_personalized_candidates(limit=2)
+
+
+def test_netease_json_requests_do_not_use_local_cache(monkeypatch) -> None:
     calls = {"count": 0}
 
     def fake_urlopen(request, timeout=15):  # noqa: ANN001
@@ -164,12 +212,10 @@ def test_netease_json_requests_use_local_cache(monkeypatch, tmp_path) -> None:
     )
 
     assert first == second
-    assert calls["count"] == 1
-    assert list(tmp_path.glob("*.json"))
+    assert calls["count"] == 2
 
 
-def test_netease_search_bypasses_local_cache(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(netease_module, "NETEASE_CACHE_DIR", tmp_path)
+def test_netease_search_requests_every_time(monkeypatch) -> None:
     calls = {"count": 0}
 
     def fake_urlopen(request, timeout=15):  # noqa: ANN001
@@ -194,7 +240,6 @@ def test_netease_search_bypasses_local_cache(monkeypatch, tmp_path) -> None:
 
     assert first == second
     assert calls["count"] == 2
-    assert list(tmp_path.glob("*.json")) == []
 
 
 def test_podcast_search_tool_reads_candidates_from_mock_json() -> None:

@@ -6,7 +6,6 @@ from app.agents.prompts import (
 )
 from app.agents.radio_agent import (
     AnthropicRadioModelClient,
-    ChatTurnDecision,
     MockRadioModelClient,
     OpenAIResponsesRadioModelClient,
     RadioAgentInput,
@@ -17,6 +16,7 @@ from app.schemas import (
     CalendarEvent,
     CandidateItem,
     ChatMessage,
+    ChatRouterResult,
     ContentType,
     ContextSnapshot,
     GenerateProgramRequest,
@@ -111,7 +111,7 @@ class RadioAgentRuntime:
         session: StationSession,
         message: str,
         chat_history: list[ChatMessage] | None = None,
-    ) -> ChatTurnDecision:
+    ) -> ChatRouterResult:
         prompt = build_chat_turn_prompt(
             session=session,
             message=message,

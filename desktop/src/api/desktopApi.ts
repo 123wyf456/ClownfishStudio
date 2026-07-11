@@ -1,6 +1,8 @@
 import {
   defaultSettings,
   type ConfigResponse,
+  type DesktopBridgeConfigResponse,
+  type DesktopBridgeStationResponse,
   type DeviceLocation,
   type GenerateStationResponse,
   type PlayerAdvanceReason,
@@ -17,11 +19,8 @@ function normalizeAgentProvider(
   if (value === "anthropic") {
     return "anthropic";
   }
-  if (value === "openai" || value === "deepseek" || value === "codex") {
+  if (value === "openai") {
     return "openai";
-  }
-  if (value === "mock") {
-    return "mock";
   }
   return fallback;
 }
@@ -37,9 +36,7 @@ function agentApiKeyFromConfig(
   if (typeof config.openai_api_key === "string" && config.openai_api_key) {
     return config.openai_api_key;
   }
-  return typeof config.deepseek_api_key === "string" && config.deepseek_api_key
-    ? config.deepseek_api_key
-    : fallback;
+  return fallback;
 }
 
 function agentBaseUrlFromConfig(
@@ -55,9 +52,7 @@ function agentBaseUrlFromConfig(
   if (typeof config.openai_base_url === "string" && config.openai_base_url) {
     return config.openai_base_url;
   }
-  return typeof config.deepseek_base_url === "string" && config.deepseek_base_url
-    ? config.deepseek_base_url
-    : fallback;
+  return fallback;
 }
 
 export async function loadConfig(): Promise<ConfigResponse> {
@@ -69,8 +64,8 @@ export async function loadConfig(): Promise<ConfigResponse> {
     };
   }
 
-  const remoteConfig = isObject(response.config) ? response.config : {};
-  const localConfig = isObject(response.local) ? response.local : {};
+  const remoteConfig: Record<string, unknown> = isObject(response.config) ? response.config : {};
+  const localConfig: Record<string, unknown> = isObject(response.local) ? response.local : {};
 
   return {
     config: {
@@ -136,7 +131,7 @@ export async function generateStation(payload: {
   message?: string;
 }): Promise<GenerateStationResponse | null> {
   const response = await window.clownfishApi?.generateStation(payload);
-  return isObject(response) ? (response as GenerateStationResponse) : null;
+  return normalizeStationResponse(response);
 }
 
 export async function chatStation(payload: {
@@ -144,7 +139,7 @@ export async function chatStation(payload: {
   message: string;
 }): Promise<GenerateStationResponse | null> {
   const response = await window.clownfishApi?.chatStation(payload);
-  return isObject(response) ? (response as GenerateStationResponse) : null;
+  return normalizeStationResponse(response);
 }
 
 export async function advancePlayer(payload: {
@@ -152,13 +147,16 @@ export async function advancePlayer(payload: {
   reason: PlayerAdvanceReason;
 }): Promise<GenerateStationResponse | null> {
   const response = await window.clownfishApi?.advancePlayer(payload);
-  return isObject(response) ? (response as GenerateStationResponse) : null;
+  return normalizeStationResponse(response);
 }
 
-function loadConfigFromResponse(response: Record<string, unknown>, fallback: ConfigResponse["config"]): ConfigResponse {
+function loadConfigFromResponse(
+  response: DesktopBridgeConfigResponse | Record<string, unknown>,
+  fallback: ConfigResponse["config"],
+): ConfigResponse {
   const runtime = normalizeRuntime(response.runtime);
-  const remoteConfig = isObject(response.config) ? response.config : {};
-  const localConfig = isObject(response.local) ? response.local : {};
+  const remoteConfig: Record<string, unknown> = isObject(response.config) ? response.config : {};
+  const localConfig: Record<string, unknown> = isObject(response.local) ? response.local : {};
 
   return {
     config: {
@@ -220,9 +218,18 @@ function loadConfigFromResponse(response: Record<string, unknown>, fallback: Con
   };
 }
 
+function normalizeStationResponse(
+  value: DesktopBridgeStationResponse | null | undefined,
+): GenerateStationResponse | null {
+  if (!value || !value.station) {
+    return null;
+  }
+  return value;
+}
+
 function mockRuntime(): ConfigResponse["runtime"] {
   return {
-    agent: { provider: "mock", configured: true, mode: "mock" },
+    agent: { provider: "openai", configured: false, mode: "not_configured" },
     weather: { provider: "disabled", configured: false, mode: "disabled" },
     music: { provider: "netease_cloud_music", configured: false, mode: "mock" },
     tts: { provider: "fish_audio", configured: false, mode: "mock" },

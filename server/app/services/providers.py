@@ -17,6 +17,7 @@ from app.schemas import (
     RuntimeStatus,
 )
 from app.tools.netease_music_tool import get_netease_music_health, is_netease_music_enabled
+from app.tools.weather_tool import get_weather as get_mock_weather
 
 AUDIO_OUTPUT_DIR = RUNTIME_ROOT / "generated_audio"
 
@@ -55,6 +56,14 @@ class DisabledWeatherProvider:
     ) -> dict[str, str | int | float | bool | None]:
         del device_context
         return dict(WEATHER_DISABLED_SNAPSHOT)
+
+
+class MockWeatherProvider:
+    def get_weather(
+        self,
+        device_context: DeviceContext | str | None,
+    ) -> dict[str, str | int | float | bool | None]:
+        return get_mock_weather(device_context)
 
 
 class MockCalendarProvider:
@@ -204,7 +213,14 @@ def build_runtime_status(settings: Settings | None = None) -> RuntimeStatus:
     brain_configured = _is_brain_configured(active_settings)
     tts_provider = active_settings.tts_provider
     calendar_provider = active_settings.calendar_provider
-    weather_provider = "disabled"
+    weather_provider = active_settings.weather_provider
+    weather_configured = (
+        weather_provider == "mock"
+        or (
+            weather_provider == "openweather"
+            and bool(active_settings.openweather_api_key)
+        )
+    )
 
     return RuntimeStatus(
         app_name=active_settings.app_name,
@@ -235,9 +251,17 @@ def build_runtime_status(settings: Settings | None = None) -> RuntimeStatus:
         ),
         weather=IntegrationStatus(
             provider=weather_provider,
-            configured=False,
-            mode="disabled",
-            detail="Weather lookup is temporarily disabled.",
+            configured=weather_configured,
+            mode=(
+                "live"
+                if weather_provider == "openweather" and active_settings.openweather_api_key
+                else weather_provider
+            ),
+            detail=(
+                active_settings.openweather_base_url
+                if weather_provider == "openweather"
+                else ""
+            ),
         ),
         music=IntegrationStatus(
             provider="netease_cloud_music",
@@ -254,7 +278,11 @@ def build_music_health(settings: Settings | None = None) -> MusicHealthResponse:
 
 
 def build_weather_provider(settings: Settings | None = None) -> WeatherProvider:
-    del settings
+    active_settings = settings or get_settings()
+    if active_settings.weather_provider == "openweather" and active_settings.openweather_api_key:
+        return OpenWeatherProvider(active_settings)
+    if active_settings.weather_provider == "mock":
+        return MockWeatherProvider()
     return DisabledWeatherProvider()
 
 

@@ -1,6 +1,6 @@
 {
   "name": "clownfishstudio-desktop",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Cross-platform AI radio desktop client for ClownfishStudio.",
   "author": "ClownfishStudio",
@@ -52,16 +52,34 @@
     ],
     "extraResources": [
       {
-        "from": "../server",
-        "to": "backend/server",
+        "from": "../server/app",
+        "to": "backend/server/app",
         "filter": [
           "**/*",
-          "!.env",
-          "!cache/**",
           "!**/__pycache__/**",
-          "!**/.pytest_cache/**",
-          "!**/.ruff_cache/**"
+          "!**/__pycache__"
         ]
+      },
+      {
+        "from": "../server/.venv",
+        "to": "backend/server/.venv",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/__pycache__"
+        ]
+      },
+      {
+        "from": "../server/pyproject.toml",
+        "to": "backend/server/pyproject.toml"
+      },
+      {
+        "from": "../server/uv.lock",
+        "to": "backend/server/uv.lock"
+      },
+      {
+        "from": "../server/.env.example",
+        "to": "backend/server/.env.example"
       },
       {
         "from": "../data/mock",
@@ -83,7 +101,7 @@
       ]
     },
     "portable": {
-      "artifactName": "${productName}-${version}-windows-portable.exe"
+      "artifactName": "ClownfishStudio.exe"
     },
     "mac": {
       "category": "public.app-category.music",

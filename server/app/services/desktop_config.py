@@ -33,10 +33,8 @@ CONFIG_KEY_ORDER = [
     "NETEASE_API_BASE_URL",
     "NETEASE_COOKIE",
     "NETEASE_PLAYBACK_LEVEL",
-    "DEEPSEEK_API_KEY",
-    "DEEPSEEK_BASE_URL",
-    "DEEPSEEK_MODEL",
 ]
+DEPRECATED_CONFIG_KEYS: set[str] = set()
 
 
 def get_desktop_config() -> DesktopConfigResponse:
@@ -57,8 +55,8 @@ def get_desktop_config() -> DesktopConfigResponse:
         feishu_app_id=settings.feishu_app_id,
         feishu_app_secret=settings.feishu_app_secret,
         feishu_calendar_id=settings.feishu_calendar_id,
-        weather_provider="disabled",
-        openweather_api_key=None,
+        weather_provider=settings.weather_provider,
+        openweather_api_key=settings.openweather_api_key,
         openweather_base_url=settings.openweather_base_url,
         netease_api_base_url=settings.netease_api_base_url,
         netease_cookie=settings.netease_cookie,
@@ -110,15 +108,12 @@ def update_desktop_config(payload: DesktopConfigUpdateRequest) -> DesktopConfigR
             ("FEISHU_APP_ID", payload.feishu_app_id),
             ("FEISHU_APP_SECRET", payload.feishu_app_secret),
             ("FEISHU_CALENDAR_ID", payload.feishu_calendar_id),
-            ("WEATHER_PROVIDER", "disabled"),
-            ("OPENWEATHER_API_KEY", None),
+            ("WEATHER_PROVIDER", payload.weather_provider),
+            ("OPENWEATHER_API_KEY", payload.openweather_api_key),
             ("OPENWEATHER_BASE_URL", payload.openweather_base_url),
             ("NETEASE_API_BASE_URL", payload.netease_api_base_url),
             ("NETEASE_COOKIE", payload.netease_cookie),
             ("NETEASE_PLAYBACK_LEVEL", payload.netease_playback_level),
-            ("DEEPSEEK_API_KEY", None),
-            ("DEEPSEEK_BASE_URL", None),
-            ("DEEPSEEK_MODEL", None),
         ]
     )
     _write_env_values(updated_values)
@@ -138,6 +133,8 @@ def _write_env_values(updated_values: OrderedDict[str, str | None]) -> None:
             continue
 
         key = raw_line.split("=", 1)[0].strip()
+        if key in DEPRECATED_CONFIG_KEYS:
+            continue
         if key not in updated_values:
             rewritten_lines.append(raw_line)
             continue

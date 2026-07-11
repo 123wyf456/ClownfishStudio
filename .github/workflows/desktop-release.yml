@@ -59,6 +59,17 @@ jobs:
         working-directory: server
         run: python -m venv --copies .venv
 
+      - name: Copy server base Python
+        shell: pwsh
+        working-directory: server
+        run: |
+          if (-not $env:pythonLocation) {
+            throw "pythonLocation is not set by actions/setup-python"
+          }
+          Remove-Item -Recurse -Force .python -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force .python | Out-Null
+          Copy-Item -Path (Join-Path $env:pythonLocation '*') -Destination .python -Recurse -Force
+
       - name: Install server test dependencies
         working-directory: server
         run: uv sync --locked --extra dev --link-mode copy --python ${{ matrix.venv_python }}

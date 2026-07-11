@@ -1,10 +1,10 @@
 import logging
 
+from app.core.config import get_settings
 from app.schemas import CandidateItem, ContentType
 from app.tools.mock_data import read_mock_json
 from app.tools.netease_music_tool import (
     NeteaseMusicToolError,
-    is_netease_music_enabled,
     search_netease_music_candidates,
 )
 
@@ -16,7 +16,8 @@ def search_music_candidates(
     tags: list[str] | None = None,
     limit: int = 10,
 ) -> list[CandidateItem]:
-    if is_netease_music_enabled():
+    settings = get_settings()
+    if settings.netease_api_base_url:
         netease_query = _netease_search_query(query=query, tags=tags)
         if netease_query:
             LOGGER.info(
@@ -24,20 +25,12 @@ def search_music_candidates(
                 netease_query,
                 limit,
             )
-            try:
-                candidates = search_netease_music_candidates(query=netease_query, limit=limit)
-            except NeteaseMusicToolError as exc:
-                LOGGER.warning(
-                    "netease_music_search_failed query=%s error=%s",
-                    netease_query,
-                    exc,
-                )
-                candidates = []
-        else:
-            candidates = []
+            return search_netease_music_candidates(query=netease_query, limit=limit)
 
-        if candidates:
-            return candidates
+        return []
+
+    if settings.app_env == "production":
+        raise NeteaseMusicToolError("NETEASE_API_BASE_URL is not configured.")
 
     data = read_mock_json("music_candidates.json")
     items = data["items"]
@@ -86,9 +79,7 @@ def _netease_search_query(query: str | None, tags: list[str] | None) -> str | No
 
     ignored_tags = {"companionship", "unknown", "weather unavailable", "unavailable"}
     usable_tags = [
-        tag.strip()
-        for tag in tags or []
-        if tag.strip() and tag.strip().lower() not in ignored_tags
+        tag.strip() for tag in tags or [] if tag.strip() and tag.strip().lower() not in ignored_tags
     ]
     joined = " ".join(usable_tags[:2]).strip()
     return joined or None

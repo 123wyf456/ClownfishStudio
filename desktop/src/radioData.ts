@@ -24,8 +24,16 @@ export type Station = {
   chatReply?: string;
   sessionId?: string;
   ttsAudioUrl?: string;
+  events?: StationEvent[];
   tracks: Track[];
   currentTrackIndex?: number;
+};
+
+export type StationEvent = {
+  id: string;
+  type: string;
+  payload?: Record<string, string | number | boolean | null | undefined>;
+  createdAt?: string;
 };
 
 export type ChatMessage = {

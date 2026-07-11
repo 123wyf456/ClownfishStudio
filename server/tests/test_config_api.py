@@ -31,17 +31,14 @@ def test_get_config_returns_desktop_configuration() -> None:
     assert payload["sections"]["music"]["provider"] == "netease_cloud_music"
 
 
-def test_legacy_deepseek_config_maps_to_openai_provider() -> None:
+def test_unknown_agent_provider_falls_back_to_mock() -> None:
     original_env = _capture_env_file()
     try:
         ENV_FILE.write_text(
             "\n".join(
                 [
-                    "RADIO_AGENT_PROVIDER=deepseek",
-                    "RADIO_AGENT_MODEL=deepseek-chat",
-                    "OPENAI_BASE_URL=https://api.openai.com/v1",
-                    "DEEPSEEK_API_KEY=legacy-deepseek-key",
-                    "DEEPSEEK_BASE_URL=https://api.deepseek.com",
+                    "RADIO_AGENT_PROVIDER=legacy_vendor",
+                    "RADIO_AGENT_MODEL=legacy-model",
                 ]
             )
             + "\n",
@@ -52,18 +49,16 @@ def test_legacy_deepseek_config_maps_to_openai_provider() -> None:
             "RADIO_AGENT_MODEL",
             "OPENAI_API_KEY",
             "OPENAI_BASE_URL",
-            "DEEPSEEK_API_KEY",
-            "DEEPSEEK_BASE_URL",
         ]:
             os.environ.pop(key, None)
         get_settings.cache_clear()
 
         settings = get_settings()
 
-        assert settings.radio_agent_provider == "openai"
-        assert settings.radio_agent_model == "deepseek-chat"
-        assert settings.openai_api_key == "legacy-deepseek-key"
-        assert settings.openai_base_url == "https://api.deepseek.com"
+        assert settings.radio_agent_provider == "mock"
+        assert settings.radio_agent_model == "legacy-model"
+        assert settings.openai_api_key is None
+        assert settings.openai_base_url == "https://api.openai.com/v1"
     finally:
         _restore_env_file(original_env)
         os.environ["RADIO_AGENT_PROVIDER"] = "mock"
@@ -80,8 +75,10 @@ def test_put_config_updates_env_and_runtime_state() -> None:
         response = client.put(
             "/api/config",
             json={
-                "radio_agent_provider": "anthropic",
-                "radio_agent_model": "claude-sonnet-4-20250514",
+                "radio_agent_provider": "openai",
+                "radio_agent_model": "gpt-4o-mini",
+                "openai_api_key": "openai-compatible-key",
+                "openai_base_url": "https://api.openai.com/v1",
                 "anthropic_api_key": "anthropic-test-key",
                 "anthropic_base_url": "https://api.anthropic.com",
                 "tts_provider": "fish_audio",
@@ -103,29 +100,41 @@ def test_put_config_updates_env_and_runtime_state() -> None:
 
         assert response.status_code == 200
         payload = response.json()
-        assert payload["config"]["radio_agent_provider"] == "anthropic"
+        assert payload["config"]["radio_agent_provider"] == "openai"
+        assert payload["config"]["radio_agent_model"] == "gpt-4o-mini"
+        assert payload["config"]["openai_api_key"] == "openai-compatible-key"
+        assert payload["config"]["openai_base_url"] == "https://api.openai.com/v1"
         assert payload["config"]["tts_provider"] == "fish_audio"
         assert payload["config"]["calendar_provider"] == "feishu"
-        assert payload["config"]["weather_provider"] == "disabled"
-        assert payload["config"]["openweather_api_key"] is None
+        assert payload["config"]["weather_provider"] == "openweather"
+        assert payload["config"]["openweather_api_key"] == "weather-key"
         assert payload["config"]["netease_playback_level"] == "exhigh"
         assert payload["sections"]["brain"]["configured"] is True
         assert payload["sections"]["tts"]["configured"] is True
-        assert payload["sections"]["weather"]["configured"] is False
+        assert payload["sections"]["weather"]["configured"] is True
 
         get_settings.cache_clear()
         settings = get_settings()
-        assert settings.radio_agent_provider == "anthropic"
+        assert settings.radio_agent_provider == "openai"
+        assert settings.radio_agent_model == "gpt-4o-mini"
+        assert settings.openai_api_key == "openai-compatible-key"
+        assert settings.openai_base_url == "https://api.openai.com/v1"
         assert settings.anthropic_api_key == "anthropic-test-key"
-        assert settings.openweather_api_key is None
+        assert settings.weather_provider == "openweather"
+        assert settings.openweather_api_key == "weather-key"
         assert settings.netease_cookie == "MUSIC_U=test-cookie"
-        assert "OPENWEATHER_API_KEY=" in ENV_FILE.read_text(encoding="utf-8")
+        assert "WEATHER_PROVIDER=openweather" in ENV_FILE.read_text(encoding="utf-8")
+        assert "OPENAI_BASE_URL=https://api.openai.com/v1" in ENV_FILE.read_text(
+            encoding="utf-8"
+        )
+        assert "OPENWEATHER_API_KEY=weather-key" in ENV_FILE.read_text(encoding="utf-8")
         assert "NETEASE_PLAYBACK_LEVEL=exhigh" in ENV_FILE.read_text(encoding="utf-8")
     finally:
         _restore_env_file(original_env)
         for key in [
             "RADIO_AGENT_PROVIDER",
             "RADIO_AGENT_MODEL",
+            "OPENAI_BASE_URL",
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_BASE_URL",
             "TTS_PROVIDER",

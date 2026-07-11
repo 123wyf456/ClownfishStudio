@@ -344,7 +344,45 @@ class DesktopConfigUpdateRequest(StrictSchema):
 class ChatMessage(StrictSchema):
     role: str = Field(min_length=1)
     text: str = Field(min_length=1, max_length=4000)
+    metadata: "ReplyMetadata | None" = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ReplyMetadata(StrictSchema):
+    reply_kind: str = Field(min_length=1, max_length=80)
+    reply_source: str = Field(min_length=1, max_length=80)
+    playlist_changed: bool = False
+    event_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class StationSessionEvent(StrictSchema):
+    event_id: str = Field(min_length=1, max_length=120)
+    event_type: str = Field(min_length=1, max_length=80)
+    payload: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ChatMusicConstraints(StrictSchema):
+    artists: list[str] = Field(default_factory=list)
+    tracks: list[str] = Field(default_factory=list)
+    genres: list[str] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=list)
+    scenes: list[str] = Field(default_factory=list)
+    mood: str | None = Field(default=None, max_length=80)
+    energy: str | None = Field(default=None, max_length=80)
+    avoid: list[str] = Field(default_factory=list)
+    raw_query: str | None = Field(default=None, max_length=1000)
+
+
+class ChatRouterResult(StrictSchema):
+    emotion: str | None = Field(default=None, max_length=80)
+    need_chat: bool = False
+    need_music: bool = False
+    need_info: bool = False
+    need_control: bool = False
+    control_action: str | None = Field(default=None, max_length=80)
+    music_constraints: ChatMusicConstraints = Field(default_factory=ChatMusicConstraints)
+    confidence: float = Field(default=0.5, ge=0, le=1)
 
 
 class StationSession(StrictSchema):
@@ -358,6 +396,7 @@ class StationSession(StrictSchema):
     weather: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
     calendar_events: list[CalendarEvent] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    events: list[StationSessionEvent] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

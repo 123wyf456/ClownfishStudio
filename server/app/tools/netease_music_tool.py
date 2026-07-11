@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
-from time import monotonic, time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
-from app.core.config import RUNTIME_ROOT, get_settings
+from app.core.config import get_settings
 from app.schemas import (
     CandidateItem,
     ContentType,
@@ -20,11 +17,6 @@ from app.schemas import (
     MusicPreferenceStatus,
     UserMusicMemory,
 )
-
-PREFERENCE_CACHE_TTL_SECONDS = 15 * 60
-NETEASE_RESPONSE_CACHE_TTL_SECONDS = 24 * 60 * 60
-NETEASE_CACHE_DIR = RUNTIME_ROOT / "cache" / "netease"
-NETEASE_UNCACHED_PATHS = {"/search", "/song/url/v1"}
 
 
 class NeteaseMusicToolError(RuntimeError):
@@ -44,10 +36,6 @@ class NeteasePreferenceSnapshot:
     favorite_artists: tuple[str, ...]
     favorite_genres: tuple[str, ...]
     seed_songs: tuple[NeteaseSeedSong, ...]
-
-
-_PREFERENCE_CACHE: dict[str, tuple[float, NeteasePreferenceSnapshot]] = {}
-
 
 def is_netease_music_enabled() -> bool:
     return bool(get_settings().netease_api_base_url)
@@ -373,11 +361,6 @@ def _get_preference_snapshot(
     base_url: str,
     cookie: str | None,
 ) -> NeteasePreferenceSnapshot | None:
-    cache_key = f"{base_url}|{cookie or ''}"
-    cached = _PREFERENCE_CACHE.get(cache_key)
-    if cached is not None and monotonic() - cached[0] < PREFERENCE_CACHE_TTL_SECONDS:
-        return cached[1]
-
     account_payload = _get_json(
         base_url=base_url,
         path="/login/status",
@@ -461,7 +444,6 @@ def _get_preference_snapshot(
         favorite_genres=tuple(favorite_genres),
         seed_songs=tuple(seed_songs),
     )
-    _PREFERENCE_CACHE[cache_key] = (monotonic(), snapshot)
     return snapshot
 
 
@@ -1077,18 +1059,6 @@ def _get_json(
     params: dict[str, int | str],
     cookie: str | None,
 ) -> dict[str, object]:
-    cache_key = _build_response_cache_key(
-        base_url=base_url,
-        path=path,
-        params=params,
-        cookie=cookie,
-    )
-    use_cache = path not in NETEASE_UNCACHED_PATHS
-    if use_cache:
-        cached_payload = _read_cached_json_response(cache_key)
-        if cached_payload is not None:
-            return cached_payload
-
     headers = {"Accept": "application/json"}
     if cookie:
         headers["Cookie"] = cookie
@@ -1102,7 +1072,7 @@ def _get_json(
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise NeteaseMusicToolError(f"NetEase API failed: {exc.code} {detail}") from exc
+            raise NeteaseMusicToolError(f"NetEase API {path} failed: {exc.code} {detail}") from exc
         except (URLError, TimeoutError, json.JSONDecodeError) as exc:
             last_network_error = exc
             continue
@@ -1110,69 +1080,11 @@ def _get_json(
         if not isinstance(payload, dict):
             raise NeteaseMusicToolError("NetEase API returned non-object JSON")
 
-        if use_cache:
-            _write_cached_json_response(cache_key, payload)
         return payload
 
-    raise NeteaseMusicToolError(f"NetEase API failed: {last_network_error}") from last_network_error
-
-
-def _build_response_cache_key(
-    base_url: str,
-    path: str,
-    params: dict[str, int | str],
-    cookie: str | None,
-) -> str:
-    normalized_params = urlencode(sorted(params.items()))
-    raw_key = "|".join(
-        [
-            base_url.rstrip("/"),
-            path,
-            normalized_params,
-            cookie or "",
-        ]
-    )
-    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
-
-
-def _read_cached_json_response(cache_key: str) -> dict[str, object] | None:
-    cache_path = _response_cache_path(cache_key)
-    if not cache_path.exists():
-        return None
-
-    try:
-        payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-    if not isinstance(payload, dict):
-        return None
-
-    cached_at = payload.get("cached_at")
-    data = payload.get("data")
-    if not isinstance(cached_at, (int, float)) or not isinstance(data, dict):
-        return None
-
-    if time() - float(cached_at) > NETEASE_RESPONSE_CACHE_TTL_SECONDS:
-        return None
-
-    return data
-
-
-def _write_cached_json_response(cache_key: str, data: dict[str, object]) -> None:
-    cache_path = _response_cache_path(cache_key)
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = cache_path.with_suffix(".tmp")
-        payload = {"cached_at": time(), "data": data}
-        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        temp_path.replace(cache_path)
-    except OSError:
-        return
-
-
-def _response_cache_path(cache_key: str) -> Path:
-    return NETEASE_CACHE_DIR / f"{cache_key}.json"
+    raise NeteaseMusicToolError(
+        f"NetEase API {path} failed: {last_network_error}"
+    ) from last_network_error
 
 
 def _candidate_base_urls(base_url: str) -> list[str]:

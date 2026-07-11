@@ -13,6 +13,8 @@ from app.agents.prompts import SYSTEM_PROMPT
 from app.schemas import (
     CandidateItem,
     ChatMessage,
+    ChatMusicConstraints,
+    ChatRouterResult,
     ContentType,
     ContextSnapshot,
     GenerateProgramRequest,
@@ -94,12 +96,6 @@ class RadioAgentInput:
     prompt: str
 
 
-@dataclass(frozen=True)
-class ChatTurnDecision:
-    intent: str
-    reply_text: str
-
-
 class RadioModelClient(Protocol):
     def generate_program(self, agent_input: RadioAgentInput) -> dict[str, object]:
         """Return a raw RadioProgram-compatible payload."""
@@ -107,8 +103,8 @@ class RadioModelClient(Protocol):
     def generate_short_text(self, prompt: str) -> str:
         """Return a short host text payload."""
 
-    def plan_chat_turn(self, prompt: str) -> ChatTurnDecision:
-        """Return the chat intent and a short host reply."""
+    def plan_chat_turn(self, prompt: str) -> ChatRouterResult:
+        """Return structured router signals for the listener's latest message."""
 
 
 class ModelRequestError(ValueError):
@@ -153,20 +149,16 @@ class MockRadioModelClient:
             "Latest user message:",
         )
         if "chat_reply" in prompt:
-            return _mock_chat_reply(message, _fallback_chat_intent(message))
+            return _mock_chat_reply(message, _fallback_chat_router_result(message))
         if message:
-            return _mock_chat_reply(message, "chat_only")
+            return _mock_chat_reply(message, _fallback_chat_router_result(message))
         if _prefers_chinese(prompt):
             return "你好，我是 Clownfish。先陪你播一小段。"
         return "Hi, I'm Clownfish. I'll keep you company for a short set."
 
-    def plan_chat_turn(self, prompt: str) -> ChatTurnDecision:
+    def plan_chat_turn(self, prompt: str) -> ChatRouterResult:
         message = _extract_prompt_field(prompt, "Latest user message:")
-        intent = _fallback_chat_intent(message)
-        return ChatTurnDecision(
-            intent=intent,
-            reply_text=_mock_chat_reply(message, intent),
-        )
+        return _fallback_chat_router_result(message)
 
     def _build_program_items(
         self,
@@ -461,16 +453,16 @@ class OpenAIResponsesRadioModelClient:
             raise ValueError("short text agent output missing text")
         return _shorten_text(text)
 
-    def plan_chat_turn(self, prompt: str) -> ChatTurnDecision:
+    def plan_chat_turn(self, prompt: str) -> ChatRouterResult:
         body = {
             "model": self._model,
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "Return only one JSON object shaped as "
-                        '{"intent":"chat_only|retune_program|song_request|config_help",'
-                        '"reply_text":"..."}.'
+                        "Return only one JSON object with emotion, need_chat, "
+                        "need_music, need_info, need_control, control_action, "
+                        "music_constraints, and confidence. Do not write a reply."
                     ),
                 },
                 {"role": "user", "content": prompt},
@@ -483,20 +475,7 @@ class OpenAIResponsesRadioModelClient:
             timeout=SHORT_TEXT_AGENT_TIMEOUT_SECONDS,
         )
         raw_text = _extract_response_text(payload)
-        try:
-            loaded = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            raise ValueError("chat turn agent returned non-JSON output") from exc
-        if not isinstance(loaded, dict):
-            raise ValueError("chat turn agent output must be a JSON object")
-
-        intent = loaded.get("intent")
-        reply_text = loaded.get("reply_text") or loaded.get("text")
-        if not isinstance(intent, str) or intent not in CHAT_TURN_INTENTS:
-            raise ValueError("chat turn agent output missing valid intent")
-        if not isinstance(reply_text, str) or not reply_text.strip():
-            raise ValueError("chat turn agent output missing reply_text")
-        return ChatTurnDecision(intent=intent, reply_text=_shorten_text(reply_text))
+        return _load_chat_router_result(raw_text)
 
     def _post_json_with_timeout(
         self,
@@ -588,21 +567,21 @@ class OpenAIResponsesRadioModelClient:
                     payload = json.loads(raw_text)
                 except json.JSONDecodeError as exc:
                     raise ModelRequestError(
-                        f"Codex agent response was not JSON: {_safe_snippet(raw_text)}"
+                        f"LLM agent response was not JSON: {_safe_snippet(raw_text)}"
                     ) from exc
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise ModelRequestError(
-                f"Codex agent request failed: {exc.code} {_safe_snippet(detail)}",
+                f"LLM agent request failed: {exc.code} {_safe_snippet(detail)}",
                 status_code=exc.code,
             ) from exc
         except TimeoutError as exc:
-            raise ModelRequestError("Codex agent request timed out") from exc
+            raise ModelRequestError("LLM agent request timed out") from exc
         except URLError as exc:
-            raise ModelRequestError(f"Codex agent request failed: {exc.reason}") from exc
+            raise ModelRequestError(f"LLM agent request failed: {exc.reason}") from exc
 
         if not isinstance(payload, dict):
-            raise ModelRequestError("Codex agent response must be a JSON object")
+            raise ModelRequestError("LLM agent response must be a JSON object")
 
         return payload
 
@@ -661,14 +640,14 @@ class AnthropicRadioModelClient:
             raise ValueError("short text agent output missing text")
         return _shorten_text(text)
 
-    def plan_chat_turn(self, prompt: str) -> ChatTurnDecision:
+    def plan_chat_turn(self, prompt: str) -> ChatRouterResult:
         body = {
             "model": self._model,
             "max_tokens": 512,
             "system": (
-                "Return only one JSON object shaped as "
-                '{"intent":"chat_only|retune_program|song_request|config_help",'
-                '"reply_text":"..."}.'
+                "Return only one JSON object with emotion, need_chat, need_music, "
+                "need_info, need_control, control_action, music_constraints, and "
+                "confidence. Do not write a reply."
             ),
             "messages": [{"role": "user", "content": prompt}],
         }
@@ -678,20 +657,7 @@ class AnthropicRadioModelClient:
             timeout=SHORT_TEXT_AGENT_TIMEOUT_SECONDS,
         )
         raw_text = _extract_response_text(payload)
-        try:
-            loaded = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            raise ValueError("chat turn agent returned non-JSON output") from exc
-        if not isinstance(loaded, dict):
-            raise ValueError("chat turn agent output must be a JSON object")
-
-        intent = loaded.get("intent")
-        reply_text = loaded.get("reply_text") or loaded.get("text")
-        if not isinstance(intent, str) or intent not in CHAT_TURN_INTENTS:
-            raise ValueError("chat turn agent output missing valid intent")
-        if not isinstance(reply_text, str) or not reply_text.strip():
-            raise ValueError("chat turn agent output missing reply_text")
-        return ChatTurnDecision(intent=intent, reply_text=_shorten_text(reply_text))
+        return _load_chat_router_result(raw_text)
 
     def _post_json(
         self,
@@ -742,7 +708,7 @@ def _should_try_chat_completions_fallback(exc: ModelRequestError) -> bool:
     return True
 
 
-CHAT_TURN_INTENTS = {"chat_only", "retune_program", "song_request", "config_help"}
+CONTROL_ACTIONS = {"play", "pause", "next", "previous", "skip", "stop", "like", "favorite"}
 
 
 def _load_response_json(payload: dict[str, object]) -> dict[str, object]:
@@ -750,7 +716,7 @@ def _load_response_json(payload: dict[str, object]) -> dict[str, object]:
     if isinstance(error, dict):
         message = error.get("message")
         raise ValueError(
-            f"Codex agent request failed: {message if isinstance(message, str) else error}"
+            f"LLM agent request failed: {message if isinstance(message, str) else error}"
         )
 
     text = _extract_response_text(payload)
@@ -758,12 +724,135 @@ def _load_response_json(payload: dict[str, object]) -> dict[str, object]:
     try:
         loaded = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError("Codex agent returned non-JSON output") from exc
+        raise ValueError("LLM agent returned non-JSON output") from exc
 
     if not isinstance(loaded, dict):
-        raise ValueError("Codex agent output must be a JSON object")
+        raise ValueError("LLM agent output must be a JSON object")
 
     return loaded
+
+
+def _load_chat_router_result(raw_text: str) -> ChatRouterResult:
+    try:
+        loaded = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("chat router returned non-JSON output") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError("chat router output must be a JSON object")
+
+    normalized = _normalize_chat_router_payload(loaded)
+    try:
+        return ChatRouterResult.model_validate(normalized)
+    except ValueError as exc:
+        raise ValueError("chat router output failed validation") from exc
+
+
+def _normalize_chat_router_payload(payload: dict[str, object]) -> dict[str, object]:
+    if "intent" in payload:
+        return _legacy_intent_to_router_payload(payload)
+
+    constraints = payload.get("music_constraints")
+    if not isinstance(constraints, dict):
+        constraints = {}
+
+    return {
+        "emotion": _normalize_text(payload.get("emotion")),
+        "need_chat": _normalize_bool(payload.get("need_chat")),
+        "need_music": _normalize_bool(payload.get("need_music")),
+        "need_info": _normalize_bool(payload.get("need_info")),
+        "need_control": _normalize_bool(payload.get("need_control")),
+        "control_action": _normalize_control_action(payload.get("control_action")),
+        "music_constraints": _normalize_music_constraints(constraints),
+        "confidence": _normalize_confidence(payload.get("confidence")),
+    }
+
+
+def _legacy_intent_to_router_payload(payload: dict[str, object]) -> dict[str, object]:
+    intent = _normalize_text(payload.get("intent")) or "chat_only"
+    message = _normalize_text(payload.get("reply_text")) or _normalize_text(payload.get("text"))
+    if intent == "song_request":
+        return (
+            _fallback_chat_router_result(message or "")
+            .model_copy(update={"need_music": True, "need_chat": True})
+            .model_dump(mode="json")
+        )
+    if intent == "retune_program":
+        return (
+            _fallback_chat_router_result(message or "")
+            .model_copy(update={"need_music": True, "need_chat": True})
+            .model_dump(mode="json")
+        )
+    if intent == "config_help":
+        return ChatRouterResult(
+            emotion="neutral",
+            need_chat=True,
+            confidence=0.6,
+        ).model_dump(mode="json")
+    return ChatRouterResult(
+        emotion="neutral",
+        need_chat=True,
+        confidence=0.5,
+    ).model_dump(mode="json")
+
+
+def _normalize_music_constraints(payload: dict[object, object]) -> dict[str, object]:
+    return {
+        "artists": _normalize_string_list(payload.get("artists") or payload.get("artist")),
+        "tracks": _normalize_string_list(payload.get("tracks") or payload.get("track")),
+        "genres": _normalize_string_list(payload.get("genres") or payload.get("genre")),
+        "languages": _normalize_string_list(payload.get("languages") or payload.get("language")),
+        "scenes": _normalize_string_list(payload.get("scenes") or payload.get("scene")),
+        "mood": _normalize_text(payload.get("mood")),
+        "energy": _normalize_text(payload.get("energy")),
+        "avoid": _normalize_string_list(payload.get("avoid")),
+        "raw_query": _normalize_text(payload.get("raw_query") or payload.get("query")),
+    }
+
+
+def _normalize_string_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        normalized = value.strip()
+        return [normalized] if normalized else []
+    if not isinstance(value, list):
+        return []
+
+    values: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            values.append(item.strip())
+    return values
+
+
+def _normalize_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1"}
+    return False
+
+
+def _normalize_confidence(value: object) -> float:
+    if isinstance(value, int | float):
+        return max(0.0, min(1.0, float(value)))
+    return 0.5
+
+
+def _normalize_control_action(value: object) -> str | None:
+    action = _normalize_text(value)
+    if action is None:
+        return None
+    normalized = action.lower().replace("_", " ")
+    aliases = {
+        "continue": "play",
+        "resume": "play",
+        "上一首": "previous",
+        "下一首": "next",
+        "跳过": "skip",
+        "收藏": "favorite",
+        "喜欢": "like",
+    }
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in CONTROL_ACTIONS else None
 
 
 def _complete_program_payload(
@@ -1093,7 +1182,7 @@ def _extract_response_text(payload: dict[str, object]) -> str:
         if chunks:
             return "".join(chunks).strip()
 
-    raise ValueError("Codex agent response did not include output text")
+    raise ValueError("LLM agent response did not include output text")
 
 
 def _join_base_url(base_url: str, path: str) -> str:
@@ -1130,10 +1219,22 @@ def _extract_latest_user_message(prompt: str) -> str:
     return _shorten_text(latest, limit=120) if latest else ""
 
 
-def _fallback_chat_intent(message: str) -> str:
+def _fallback_chat_router_result(message: str) -> ChatRouterResult:
     text = message.strip().lower()
     if not text:
-        return "chat_only"
+        return ChatRouterResult(emotion="neutral", need_chat=True, confidence=0.4)
+
+    constraints = ChatMusicConstraints(raw_query=message.strip())
+
+    control_action = _detect_control_action(text)
+    if control_action is not None:
+        return ChatRouterResult(
+            emotion="neutral",
+            need_control=True,
+            control_action=control_action,
+            confidence=0.85,
+        )
+
     if _contains_any(
         text,
         [
@@ -1148,11 +1249,53 @@ def _fallback_chat_intent(message: str) -> str:
             "fish audio",
         ],
     ):
-        return "config_help"
+        return ChatRouterResult(emotion="neutral", need_chat=True, confidence=0.75)
+
     if _contains_any(
         text,
         [
-            "播放",
+            "谁唱",
+            "谁唱的",
+            "是谁",
+            "歌手是谁",
+            "这首歌",
+            "这首",
+            "who sings",
+            "who is singing",
+            "what song",
+            "artist?",
+        ],
+    ) and not _contains_any(text, ["来点", "来一首", "想听", "推荐"]):
+        return ChatRouterResult(
+            emotion="curious",
+            need_info=True,
+            need_chat=True,
+            confidence=0.85,
+        )
+
+    emotion = _detect_emotion(text)
+    if emotion is not None:
+        constraints = constraints.model_copy(
+            update={
+                "mood": emotion,
+                "energy": "low" if emotion in {"tired", "anxious"} else None,
+                "scenes": ["recovery"] if emotion == "tired" else [],
+                "avoid": ["high_bpm", "aggressive"] if emotion in {"tired", "anxious"} else [],
+            }
+        )
+        return ChatRouterResult(
+            emotion=emotion,
+            need_chat=True,
+            need_music=True,
+            music_constraints=constraints,
+            confidence=0.8,
+        )
+
+    if _contains_any(
+        text,
+        [
+            "放点",
+            "放一些",
             "来点",
             "来一首",
             "想听",
@@ -1168,7 +1311,13 @@ def _fallback_chat_intent(message: str) -> str:
             "recommend",
         ],
     ):
-        return "song_request"
+        return ChatRouterResult(
+            emotion=emotion or "neutral",
+            need_chat=True,
+            need_music=True,
+            music_constraints=_infer_music_constraints(message),
+            confidence=0.8,
+        )
     if _contains_any(
         text,
         [
@@ -1189,8 +1338,111 @@ def _fallback_chat_intent(message: str) -> str:
             "no podcast",
         ],
     ):
-        return "retune_program"
-    return "chat_only"
+        return ChatRouterResult(
+            emotion=emotion or "neutral",
+            need_chat=True,
+            need_music=True,
+            music_constraints=_infer_music_constraints(message),
+            confidence=0.7,
+        )
+    return ChatRouterResult(emotion="neutral", need_chat=True, confidence=0.55)
+
+
+def _detect_control_action(text: str) -> str | None:
+    if _contains_any(text, ["暂停", "pause", "停一下", "先停"]):
+        return "pause"
+    if _contains_any(text, ["继续播放", "继续放", "播放吧", "resume", "continue"]):
+        return "play"
+    if _contains_any(text, ["下一首", "切歌", "跳过", "next", "skip"]):
+        return "skip"
+    if _contains_any(text, ["上一首", "previous", "back"]):
+        return "previous"
+    if _contains_any(text, ["停止播放", "stop"]):
+        return "stop"
+    if _contains_any(text, ["收藏", "favorite", "collect"]):
+        return "favorite"
+    if _contains_any(text, ["喜欢这首", "like this", "i like this"]):
+        return "like"
+    return None
+
+
+def _detect_emotion(text: str) -> str | None:
+    if _contains_any(text, ["累", "疲惫", "没精神", "tired", "exhausted", "worn out"]):
+        return "tired"
+    if _contains_any(text, ["焦虑", "烦", "慌", "anxious", "stress", "stressed"]):
+        return "anxious"
+    if _contains_any(text, ["开心", "高兴", "happy", "good mood"]):
+        return "happy"
+    if _contains_any(text, ["怀旧", "想以前", "nostalgic"]):
+        return "nostalgic"
+    if _contains_any(text, ["平静", "安静", "calm", "quiet"]):
+        return "calm"
+    return None
+
+
+def _infer_music_constraints(message: str) -> ChatMusicConstraints:
+    text = message.strip()
+    lower_text = text.lower()
+    constraints = ChatMusicConstraints(raw_query=text)
+
+    artists: list[str] = []
+    artist_match = re.search(
+        r"(?:放点|来点|想听|播放|推荐)\s*([\u4e00-\u9fffA-Za-z0-9 ._-]{2,24})",
+        text,
+    )
+    if artist_match:
+        artist = artist_match.group(1).strip(" 的歌音乐")
+        if artist and artist not in {"安静", "轻松", "中文", "日语", "英文"}:
+            artists.append(artist)
+
+    genres: list[str] = []
+    if _contains_any(lower_text, ["jazz", "爵士"]):
+        genres.append("jazz")
+    if _contains_any(lower_text, ["民谣", "folk"]):
+        genres.append("folk")
+    if _contains_any(lower_text, ["摇滚", "rock"]):
+        genres.append("rock")
+    if _contains_any(lower_text, ["电子", "electronic"]):
+        genres.append("electronic")
+
+    languages: list[str] = []
+    if _contains_any(lower_text, ["中文", "华语", "mandarin", "chinese"]):
+        languages.append("Chinese")
+    if _contains_any(lower_text, ["日语", "日文", "japanese"]):
+        languages.append("Japanese")
+    if _contains_any(lower_text, ["英文", "english"]):
+        languages.append("English")
+
+    scenes: list[str] = []
+    if _contains_any(lower_text, ["雨夜", "rain", "rainy"]):
+        scenes.append("rainy night")
+    if _contains_any(lower_text, ["睡前", "入睡", "sleep"]):
+        scenes.append("sleep")
+    if _contains_any(lower_text, ["通勤", "commute"]):
+        scenes.append("commute")
+
+    mood = _detect_emotion(lower_text)
+    energy = None
+    avoid: list[str] = []
+    if _contains_any(lower_text, ["安静", "慢", "轻一点", "quiet", "slow"]):
+        mood = mood or "calm"
+        energy = "low"
+    if _contains_any(lower_text, ["不要播客", "no podcast"]):
+        avoid.append("podcast")
+    if _contains_any(lower_text, ["不要太吵", "别太吵", "not loud"]):
+        avoid.append("loud")
+
+    return constraints.model_copy(
+        update={
+            "artists": artists,
+            "genres": genres,
+            "languages": languages,
+            "scenes": scenes,
+            "mood": mood,
+            "energy": energy,
+            "avoid": avoid,
+        }
+    )
 
 
 def _contains_any(text: str, values: list[str]) -> bool:
@@ -1204,26 +1456,26 @@ def _shorten_text(text: str, limit: int = 80) -> str:
     return normalized[:limit].rstrip("，。,. ") + "..."
 
 
-def _mock_chat_reply(message: str, intent: str) -> str:
+def _mock_chat_reply(message: str, router: ChatRouterResult) -> str:
     use_chinese = _prefers_chinese(message)
+    reply_kind = _router_reply_kind(router)
     if use_chinese:
         variants = {
-            "config_help": [
-                "可以，我先看配置这边。",
-                "好，我们先把设置理顺。",
-                "我在，先处理配置问题。",
+            "control": [
+                "好。",
+                "收到。",
+                "嗯，我来处理。",
             ],
-            "song_request": [
+            "info": [
+                "我看一下这首的信息。",
+                "好，我给你说清楚一点。",
+            ],
+            "music": [
                 "好，我按这个方向找歌。",
                 "可以，这个口味我接住了。",
                 "明白，下一段往这里靠。",
             ],
-            "retune_program": [
-                "好，后面我换个走向。",
-                "收到，我把节奏调一下。",
-                "嗯，我让后面更贴近你。",
-            ],
-            "chat_only": [
+            "chat": [
                 "我在，先陪你听着。",
                 "嗯，我们慢慢来。",
                 "好，电台先不急着换。",
@@ -1231,28 +1483,37 @@ def _mock_chat_reply(message: str, intent: str) -> str:
         }
     else:
         variants = {
-            "config_help": [
-                "Sure, I will check the setup first.",
-                "Let us sort the settings first.",
-                "I am here; setup first.",
+            "control": [
+                "Okay.",
+                "Done.",
+                "Got it.",
             ],
-            "song_request": [
+            "info": [
+                "I will check this track.",
+                "Let me make that clear.",
+            ],
+            "music": [
                 "Got it, I will look in that direction.",
                 "Yes, I can lean the station that way.",
                 "I hear the taste; next set follows it.",
             ],
-            "retune_program": [
-                "Okay, I will shift the next stretch.",
-                "Understood, I will retune the pacing.",
-                "I will move the station closer to that.",
-            ],
-            "chat_only": [
+            "chat": [
                 "I am here; we can keep listening.",
                 "Yeah, let us take it slowly.",
                 "I hear you; the station can stay gentle.",
             ],
         }
-    return _choose_variant(variants.get(intent) or variants["chat_only"], message or intent)
+    return _choose_variant(variants.get(reply_kind) or variants["chat"], f"{reply_kind}:{message}")
+
+
+def _router_reply_kind(router: ChatRouterResult) -> str:
+    if router.need_control:
+        return "control"
+    if router.need_info and not router.need_music:
+        return "info"
+    if router.need_music:
+        return "music"
+    return "chat"
 
 
 def _choose_variant(values: list[str], seed: str) -> str:

@@ -2,7 +2,7 @@ import type { Station } from "@/radioData";
 
 export type ApiSettings = {
   serverBaseUrl: string;
-  agentProvider: "mock" | "openai" | "anthropic";
+  agentProvider: "openai" | "anthropic";
   agentModel: string;
   agentApiKey: string;
   agentBaseUrl: string;
@@ -41,17 +41,32 @@ export type ConfigResponse = {
   runtime: RuntimeStatus;
 };
 
+export type DesktopBridgeConfigResponse = ConfigResponse & {
+  local?: {
+    serverBaseUrl?: string;
+  };
+};
+
 export type GenerateStationResponse = {
   station: Station;
   runtime: RuntimeStatus;
   warnings: string[];
 };
 
+export type DesktopBridgeStationResponse = GenerateStationResponse;
+
 export type PlayerAdvanceReason = "ended" | "next" | "previous" | "skip";
+
+export type DesktopStationEvent = {
+  id: string;
+  type: string;
+  payload?: Record<string, string | number | boolean | null | undefined>;
+  createdAt?: string;
+};
 
 export const defaultSettings: ApiSettings = {
   serverBaseUrl: "http://127.0.0.1:8000",
-  agentProvider: "mock",
+  agentProvider: "openai",
   agentModel: "gpt-4o-mini",
   agentApiKey: "",
   agentBaseUrl: "https://api.openai.com/v1",

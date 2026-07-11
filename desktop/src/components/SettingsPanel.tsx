@@ -92,7 +92,6 @@ export function SettingsPanel({
                 }
                 value={draft.agentProvider}
               >
-                <option value="mock">mock</option>
                 <option value="openai">OpenAI-compatible</option>
                 <option value="anthropic">Anthropic</option>
               </select>
@@ -104,9 +103,17 @@ export function SettingsPanel({
 
           <section className="hardware-panel grid gap-2 rounded-[16px] border border-line/70 p-3">
             <SectionHeader label="Weather" state={runtime?.weather.mode ?? "disabled"} />
-            <p className="text-[10px] leading-relaxed text-muted">
-              Weather lookup is temporarily disabled.
-            </p>
+            <Field
+              label="OpenWeather Base URL"
+              value={draft.openweatherBaseUrl}
+              onChange={(openweatherBaseUrl) => setDraft((value) => ({ ...value, openweatherBaseUrl }))}
+            />
+            <Field
+              label="OpenWeather API Key"
+              secret
+              value={draft.openweatherApiKey}
+              onChange={(openweatherApiKey) => setDraft((value) => ({ ...value, openweatherApiKey }))}
+            />
           </section>
 
           <section className="hardware-panel grid gap-2 rounded-[16px] border border-line/70 p-3">

@@ -32,7 +32,7 @@ class Settings(BaseModel):
     openai_api_key: str | None = Field(default=None)
     openai_base_url: str = Field(default="https://api.openai.com/v1")
     radio_agent_provider: Literal["mock", "openai", "anthropic"] = Field(default="mock")
-    radio_agent_model: str = Field(default="codex-mini-latest")
+    radio_agent_model: str = Field(default="gpt-4o-mini")
     anthropic_api_key: str | None = Field(default=None)
     anthropic_base_url: str = Field(default="https://api.anthropic.com")
     tts_provider: Literal["mock", "fish_audio"] = Field(default="mock")
@@ -68,8 +68,6 @@ def _read_env_file(path: Path) -> dict[str, str]:
 
 def _normalize_agent_provider(value: str | None) -> Literal["mock", "openai", "anthropic"]:
     normalized = (value or "mock").strip().lower()
-    if normalized in {"deepseek", "codex"}:
-        return "openai"
     if normalized == "anthropic":
         return "anthropic"
     if normalized == "openai":
@@ -85,7 +83,6 @@ def get_settings() -> Settings:
         "RADIO_AGENT_PROVIDER", "mock"
     )
     configured_provider = _normalize_agent_provider(raw_provider)
-    use_legacy_deepseek = (raw_provider or "").strip().lower() == "deepseek"
 
     def read_value(name: str, default: str | None = None) -> str | None:
         if name in os.environ:
@@ -97,24 +94,10 @@ def get_settings() -> Settings:
         app_env=read_value("APP_ENV", "development") or "development",
         log_level=read_value("LOG_LEVEL", "INFO") or "INFO",
         database_url=read_value("DATABASE_URL", default_database_url) or default_database_url,
-        openai_api_key=(
-            read_value("DEEPSEEK_API_KEY")
-            if use_legacy_deepseek
-            else read_value("OPENAI_API_KEY")
-        ),
-        openai_base_url=(
-            read_value("DEEPSEEK_BASE_URL")
-            if use_legacy_deepseek
-            else read_value("OPENAI_BASE_URL")
-        )
-        or "https://api.openai.com/v1",
+        openai_api_key=read_value("OPENAI_API_KEY"),
+        openai_base_url=read_value("OPENAI_BASE_URL") or "https://api.openai.com/v1",
         radio_agent_provider=configured_provider,
-        radio_agent_model=(
-            read_value("DEEPSEEK_MODEL") or read_value("RADIO_AGENT_MODEL")
-            if use_legacy_deepseek
-            else read_value("RADIO_AGENT_MODEL")
-        )
-        or "gpt-4o-mini",
+        radio_agent_model=read_value("RADIO_AGENT_MODEL") or "gpt-4o-mini",
         anthropic_api_key=read_value("ANTHROPIC_API_KEY"),
         anthropic_base_url=read_value("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
         or "https://api.anthropic.com",

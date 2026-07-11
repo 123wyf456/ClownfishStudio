@@ -483,8 +483,8 @@ def test_collect_candidates_filters_to_requested_artist_when_artist_focus(monkey
     wrong_artist = CandidateItem(
         candidate_id="netease-other-1",
         content_type=ContentType.music,
-        title="夜曲",
-        creator="周杰伦",
+        title="Unrelated Song",
+        creator="Other Artist",
         duration_seconds=210,
         playback_url="https://example.com/other.mp3",
         tags=["search_result", "query_match"],
@@ -534,8 +534,8 @@ def test_collect_candidates_does_not_fill_artist_focus_with_unrelated_tracks(
     wrong_artist = CandidateItem(
         candidate_id="netease-other-1",
         content_type=ContentType.music,
-        title="夜曲",
-        creator="周杰伦",
+        title="Unrelated Song",
+        creator="Other Artist",
         duration_seconds=210,
         playback_url="https://example.com/other.mp3",
         tags=["search_result", "query_match"],

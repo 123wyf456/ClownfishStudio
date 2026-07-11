@@ -16,6 +16,7 @@ from app.schemas import (
     DeviceContext,
     GenerateProgramRequest,
     ProgramItemType,
+    StationSession,
     UserStateInput,
 )
 from app.tools import (
@@ -201,6 +202,80 @@ def test_runtime_normalizes_flat_model_items_into_program_blocks() -> None:
     assert program.blocks[0].items[1].candidate_id == "music-1"
     assert program.blocks[0].items[1].title == candidate_items[0].title
     assert program.blocks[0].items[3].candidate_id == "podcast-1"
+
+
+def test_mock_router_outputs_chat_and_music_for_emotional_message() -> None:
+    runtime = RadioAgentRuntime()
+
+    result = runtime.plan_chat_turn(
+        session=StationSession(
+            session_id="session-router",
+            user_id="demo-user",
+            greeting="你好，我是 Clownfish。",
+        ),
+        message="最近有点累",
+        chat_history=[],
+    )
+
+    assert result.emotion == "tired"
+    assert result.need_chat is True
+    assert result.need_music is True
+    assert result.need_info is False
+    assert result.music_constraints.energy == "low"
+
+
+def test_mock_router_outputs_info_for_current_song_question() -> None:
+    runtime = RadioAgentRuntime()
+
+    result = runtime.plan_chat_turn(
+        session=StationSession(
+            session_id="session-router",
+            user_id="demo-user",
+            greeting="你好，我是 Clownfish。",
+        ),
+        message="这首歌是谁唱的",
+        chat_history=[],
+    )
+
+    assert result.need_info is True
+    assert result.need_music is False
+    assert result.need_chat is True
+
+
+def test_mock_router_outputs_control_for_player_command() -> None:
+    runtime = RadioAgentRuntime()
+
+    result = runtime.plan_chat_turn(
+        session=StationSession(
+            session_id="session-router",
+            user_id="demo-user",
+            greeting="你好，我是 Clownfish。",
+        ),
+        message="暂停一下",
+        chat_history=[],
+    )
+
+    assert result.need_control is True
+    assert result.control_action == "pause"
+    assert result.need_music is False
+
+
+def test_mock_router_extracts_artist_constraints() -> None:
+    runtime = RadioAgentRuntime()
+    requested_artist = "示例歌手A"
+
+    result = runtime.plan_chat_turn(
+        session=StationSession(
+            session_id="session-router",
+            user_id="demo-user",
+            greeting="你好，我是 Clownfish。",
+        ),
+        message=f"放点{requested_artist}",
+        chat_history=[],
+    )
+
+    assert result.need_music is True
+    assert requested_artist in result.music_constraints.artists
 
 
 def make_request() -> GenerateProgramRequest:
