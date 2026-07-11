@@ -26,12 +26,12 @@ def test_get_config_returns_desktop_configuration() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["config"]["radio_agent_provider"] == "mock"
-    assert payload["config"]["tts_provider"] == "mock"
+    assert payload["config"]["radio_agent_provider"] == "openai"
+    assert payload["config"]["tts_provider"] == "fish_audio"
     assert payload["sections"]["music"]["provider"] == "netease_cloud_music"
 
 
-def test_unknown_agent_provider_falls_back_to_mock() -> None:
+def test_unknown_agent_provider_falls_back_to_openai() -> None:
     original_env = _capture_env_file()
     try:
         ENV_FILE.write_text(
@@ -55,13 +55,13 @@ def test_unknown_agent_provider_falls_back_to_mock() -> None:
 
         settings = get_settings()
 
-        assert settings.radio_agent_provider == "mock"
+        assert settings.radio_agent_provider == "openai"
         assert settings.radio_agent_model == "legacy-model"
         assert settings.openai_api_key is None
         assert settings.openai_base_url == "https://api.openai.com/v1"
     finally:
         _restore_env_file(original_env)
-        os.environ["RADIO_AGENT_PROVIDER"] = "mock"
+        os.environ["RADIO_AGENT_PROVIDER"] = "openai"
         os.environ["RADIO_AGENT_MODEL"] = "test-model"
         os.environ["OPENAI_API_KEY"] = ""
         get_settings.cache_clear()
@@ -154,12 +154,12 @@ def test_put_config_updates_env_and_runtime_state() -> None:
         ]:
             if key != "RADIO_AGENT_PROVIDER":
                 os.environ.pop(key, None)
-        os.environ["RADIO_AGENT_PROVIDER"] = "mock"
+        os.environ["RADIO_AGENT_PROVIDER"] = "openai"
         os.environ["RADIO_AGENT_MODEL"] = "test-model"
         os.environ["OPENAI_API_KEY"] = ""
         os.environ["ANTHROPIC_API_KEY"] = ""
         os.environ["NETEASE_API_BASE_URL"] = ""
-        os.environ["TTS_PROVIDER"] = "mock"
-        os.environ["CALENDAR_PROVIDER"] = "mock"
-        os.environ["WEATHER_PROVIDER"] = "mock"
+        os.environ["TTS_PROVIDER"] = "fish_audio"
+        os.environ["CALENDAR_PROVIDER"] = "feishu"
+        os.environ["WEATHER_PROVIDER"] = "disabled"
         get_settings.cache_clear()

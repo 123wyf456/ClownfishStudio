@@ -1,9 +1,32 @@
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.agents import DeterministicRadioModelClient, RadioAgentRuntime
+from app.agents.song_request_agent import SongRequestPlan
 from app.main import app
+from app.services import program_generation
 from app.tools import list_feedback_events, list_memory_update_hints
+
+
+@pytest.fixture(autouse=True)
+def fake_program_agents(monkeypatch) -> None:
+    original_init = program_generation.ProgramGenerationService.__init__
+
+    def init_with_fakes(self, runtime=None, song_request_planner=None):  # noqa: ANN001
+        original_init(
+            self,
+            runtime=runtime
+            or RadioAgentRuntime(model_client=DeterministicRadioModelClient()),
+            song_request_planner=song_request_planner or _FeedbackSongPlanner(),
+        )
+
+    monkeypatch.setattr(
+        program_generation.ProgramGenerationService,
+        "__init__",
+        init_with_fakes,
+    )
 
 
 def test_feedback_endpoint_saves_feedback_and_memory_hint() -> None:
@@ -54,6 +77,20 @@ def test_feedback_hint_affects_next_generated_program() -> None:
         if item["item_type"] != "narration"
     }
     assert "music-1" not in selected_candidate_ids
+
+
+class _FeedbackSongPlanner:
+    def plan(self, *, message: str, memory, weather, **kwargs) -> SongRequestPlan:  # noqa: ANN001
+        del memory, weather, kwargs
+        return SongRequestPlan(
+            intent=message or "test station",
+            search_queries=["late night"],
+            preferred_title=None,
+            preferred_artist=None,
+            preferred_tags=["quiet"],
+            mode="mood_mix",
+            reason="test double",
+        )
 
 
 def make_generate_payload(user_id: str) -> dict[str, object]:

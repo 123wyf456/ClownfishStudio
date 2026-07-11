@@ -2,7 +2,7 @@
 
 from app.agents.radio_agent import (
     AnthropicRadioModelClient,
-    MockRadioModelClient,
+    DeterministicRadioModelClient,
     OpenAIResponsesRadioModelClient,
     RadioAgentInput,
     RadioModelClient,
@@ -10,7 +10,6 @@ from app.agents.radio_agent import (
 from app.agents.runtime import AgentOutputValidationError, RadioAgentRuntime
 from app.agents.song_request_agent import (
     AnthropicSongRequestPlanner,
-    MockSongRequestPlanner,
     OpenAISongRequestPlanner,
     SongRequestPlan,
     SongRequestPlanner,
@@ -21,8 +20,7 @@ __all__ = [
     "AgentOutputValidationError",
     "AnthropicRadioModelClient",
     "AnthropicSongRequestPlanner",
-    "MockRadioModelClient",
-    "MockSongRequestPlanner",
+    "DeterministicRadioModelClient",
     "OpenAIResponsesRadioModelClient",
     "OpenAISongRequestPlanner",
     "RadioAgentInput",

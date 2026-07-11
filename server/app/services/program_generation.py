@@ -7,9 +7,6 @@ from uuid import uuid4
 
 from app.agents import (
     AgentOutputValidationError,
-    MockRadioModelClient,
-    MockSongRequestPlanner,
-    RadioAgentInput,
     RadioAgentRuntime,
     SongRequestPlanner,
     build_song_request_planner,
@@ -18,7 +15,6 @@ from app.schemas import (
     CalendarEvent,
     CandidateItem,
     ChatMessage,
-    ContextSnapshot,
     GenerateProgramRequest,
     GenerateProgramResponse,
     RadioProgram,
@@ -105,7 +101,7 @@ class ProgramGenerationService:
         timings.update({f"candidates.{key}": value for key, value in candidate_timings.items()})
 
         step_started_at = monotonic()
-        program, agent_warning = self._generate_program_with_fallback(
+        program = self._generate_program(
             request=request,
             weather=weather,
             calendar_events=calendar_events,
@@ -131,11 +127,11 @@ class ProgramGenerationService:
             request_id=f"request-{uuid4().hex}",
             program=program,
             candidate_count=len(candidate_items),
-            warnings=[*warnings, *([agent_warning] if agent_warning else [])],
+            warnings=warnings,
             candidate_items=candidate_items,
         )
 
-    def _generate_program_with_fallback(
+    def _generate_program(
         self,
         *,
         request: GenerateProgramRequest,
@@ -145,19 +141,16 @@ class ProgramGenerationService:
         history: list[dict[str, str]],
         candidate_items: list[CandidateItem],
         chat_history: list[ChatMessage],
-    ) -> tuple[RadioProgram, str | None]:
+    ) -> RadioProgram:
         try:
-            return (
-                self._runtime.generate_program(
-                    request=request,
-                    weather=weather,
-                    calendar_events=calendar_events,
-                    memory=memory,
-                    history=history,
-                    candidate_items=candidate_items,
-                    chat_history=chat_history,
-                ),
-                None,
+            return self._runtime.generate_program(
+                request=request,
+                weather=weather,
+                calendar_events=calendar_events,
+                memory=memory,
+                history=history,
+                candidate_items=candidate_items,
+                chat_history=chat_history,
             )
         except Exception as exc:
             if isinstance(exc, AgentOutputValidationError) and not candidate_items:
@@ -167,27 +160,9 @@ class ProgramGenerationService:
                 request.user_id,
                 exc,
             )
-            context_snapshot = ContextSnapshot(
-                device_context=request.device_context,
-                user_state=request.user_state,
-                weather=weather,
-                calendar_events=calendar_events,
-            )
-            agent_input = RadioAgentInput(
-                request=request,
-                context_snapshot=context_snapshot,
-                memory=memory,
-                history=history,
-                candidate_items=candidate_items,
-                chat_history=chat_history,
-                prompt="fallback",
-            )
-            raw_program = MockRadioModelClient().generate_program(agent_input)
-            return (
-                RadioProgram.model_validate(raw_program),
-                "Radio agent timed out or returned invalid output; "
-                "used a local fallback for this request.",
-            )
+            if isinstance(exc, AgentOutputValidationError):
+                raise
+            raise AgentOutputValidationError(f"Radio agent failed: {exc}") from exc
 
     def _collect_candidates(
         self,
@@ -214,8 +189,8 @@ class ProgramGenerationService:
         music_limit, podcast_limit = _candidate_mix(request)
         step_started_at = monotonic()
         planner_warnings: list[str] = []
-        if _can_use_local_request_plan(request.user_state.free_text or ""):
-            request_plan = MockSongRequestPlanner().plan(
+        try:
+            request_plan = self._song_request_planner.plan(
                 message=request.user_state.free_text or "",
                 memory=resolved_memory,
                 weather=resolved_weather,
@@ -224,36 +199,13 @@ class ProgramGenerationService:
                 history=resolved_history,
                 chat_history=chat_history,
             )
-        else:
-            try:
-                request_plan = self._song_request_planner.plan(
-                    message=request.user_state.free_text or "",
-                    memory=resolved_memory,
-                    weather=resolved_weather,
-                    device_context=request.device_context,
-                    user_state=request.user_state,
-                    history=resolved_history,
-                    chat_history=chat_history,
-                )
-            except Exception as exc:
-                LOGGER.warning(
-                    "song_request_planner_failed user_id=%s error=%s",
-                    request.user_id,
-                    exc,
-                )
-                planner_warnings.append(
-                    "Song request agent returned an invalid plan; "
-                    "used a local fallback for this request."
-                )
-                request_plan = MockSongRequestPlanner().plan(
-                    message=request.user_state.free_text or "",
-                    memory=resolved_memory,
-                    weather=resolved_weather,
-                    device_context=request.device_context,
-                    user_state=request.user_state,
-                    history=resolved_history,
-                    chat_history=chat_history,
-                )
+        except Exception as exc:
+            LOGGER.warning(
+                "song_request_planner_failed user_id=%s error=%s",
+                request.user_id,
+                exc,
+            )
+            raise AgentOutputValidationError(f"Song request agent failed: {exc}") from exc
         timings["request_planner"] = monotonic() - step_started_at
         query_plan = _build_music_query_plan(request_plan=request_plan)
         avoid_candidate_ids = _recent_candidate_ids(

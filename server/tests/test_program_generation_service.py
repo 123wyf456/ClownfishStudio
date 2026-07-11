@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from app.agents import AgentOutputValidationError
 from app.agents.song_request_agent import SongRequestPlan
 from app.schemas import (
     CandidateItem,
@@ -49,7 +50,7 @@ def test_collect_candidates_uses_free_text_for_targeted_music(monkeypatch) -> No
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     request = GenerateProgramRequest(
         user_id="demo-user",
         device_context=DeviceContext(
@@ -107,7 +108,7 @@ def test_collect_candidates_does_not_search_raw_user_sentence(monkeypatch) -> No
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     service._song_request_planner = _MessySongRequestPlanner()
     request = GenerateProgramRequest(
         user_id="demo-user",
@@ -162,7 +163,7 @@ def test_collect_candidates_uses_contextual_query_for_auto_boot(monkeypatch) -> 
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     request = GenerateProgramRequest(
         user_id="demo-user",
         device_context=DeviceContext(
@@ -230,7 +231,7 @@ def test_collect_candidates_stops_searching_after_enough_targeted_batch(
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     service._song_request_planner = _WeekndArtistSongRequestPlanner()
     request = GenerateProgramRequest(
         user_id="demo-user",
@@ -264,7 +265,7 @@ def test_collect_candidates_warns_once_when_targeted_music_is_missing(monkeypatc
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     request = GenerateProgramRequest(
         user_id="demo-user",
         device_context=DeviceContext(
@@ -322,7 +323,7 @@ def test_collect_candidates_uses_broad_fallback_after_empty_targeted_searches(mo
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     request = GenerateProgramRequest(
         user_id="demo-user",
         device_context=DeviceContext(
@@ -382,7 +383,7 @@ def test_collect_candidates_uses_non_raw_broad_fallback_for_mood_mix(monkeypatch
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     service._song_request_planner = _MoodMixSongRequestPlanner()
     request = GenerateProgramRequest(
         user_id="demo-user",
@@ -450,7 +451,7 @@ def test_collect_candidates_prioritizes_song_request_plan_matches(monkeypatch) -
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     service._song_request_planner = _StubSongRequestPlanner()
     request = GenerateProgramRequest(
         user_id="demo-user",
@@ -508,7 +509,7 @@ def test_collect_candidates_filters_to_requested_artist_when_artist_focus(monkey
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     service._song_request_planner = _ArtistFocusSongRequestPlanner()
     request = GenerateProgramRequest(
         user_id="demo-user",
@@ -571,7 +572,7 @@ def test_collect_candidates_does_not_fill_artist_focus_with_unrelated_tracks(
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     service._song_request_planner = _ArtistFocusSongRequestPlanner()
     request = GenerateProgramRequest(
         user_id="demo-user",
@@ -614,7 +615,7 @@ def test_collect_candidates_passes_context_to_song_request_planner(monkeypatch) 
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     service._song_request_planner = _CapturingSongRequestPlanner(captured)
     request = GenerateProgramRequest(
         user_id="demo-user",
@@ -636,18 +637,7 @@ def test_collect_candidates_passes_context_to_song_request_planner(monkeypatch) 
     assert captured["chat_history"] == chat_history
 
 
-def test_collect_candidates_falls_back_when_song_request_planner_fails(monkeypatch) -> None:
-    fallback_candidate = CandidateItem(
-        candidate_id="music-fallback",
-        content_type=ContentType.music,
-        title="Fallback Song",
-        creator="Fallback Artist",
-        duration_seconds=180,
-        playback_url="https://example.com/fallback.mp3",
-        tags=["quiet"],
-        source="mock_music",
-    )
-
+def test_collect_candidates_raises_when_song_request_planner_fails(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.program_generation.get_netease_preference_candidates",
         lambda limit=8: [],
@@ -658,14 +648,14 @@ def test_collect_candidates_falls_back_when_song_request_planner_fails(monkeypat
     )
     monkeypatch.setattr(
         "app.services.program_generation.search_music_candidates",
-        lambda query=None, tags=None, limit=10: [fallback_candidate],
+        lambda query=None, tags=None, limit=10: [],
     )
     monkeypatch.setattr(
         "app.services.program_generation.search_podcast_candidates",
         lambda query=None, tags=None, limit=10: [],
     )
 
-    service = ProgramGenerationService()
+    service = ProgramGenerationService(song_request_planner=_GeneralSongRequestPlanner())
     service._song_request_planner = _FailingSongRequestPlanner()
     request = GenerateProgramRequest(
         user_id="demo-user",
@@ -678,12 +668,27 @@ def test_collect_candidates_falls_back_when_song_request_planner_fails(monkeypat
         max_candidates=6,
     )
 
-    candidate_items, warnings = service._collect_candidates(request)
+    try:
+        service._collect_candidates(request)
+    except AgentOutputValidationError as exc:
+        assert "Song request agent failed" in str(exc)
+    else:
+        raise AssertionError("planner failures must not fall back to local request planning")
 
-    assert candidate_items
-    assert warnings[0] == (
-        "Song request agent returned an invalid plan; used a local fallback for this request."
-    )
+
+class _GeneralSongRequestPlanner:
+    def plan(self, *, message: str, memory, weather, **kwargs) -> SongRequestPlan:  # noqa: ANN001
+        del memory, weather, kwargs
+        is_auto_boot = "ClownfishStudio" in message or "此刻的电台" in message
+        return SongRequestPlan(
+            intent=message or "general radio",
+            search_queries=["late night"] if is_auto_boot or not message else [message],
+            preferred_title=None,
+            preferred_artist=None,
+            preferred_tags=["late night"] if is_auto_boot or not message else [],
+            mode="mood_mix" if is_auto_boot or not message else "general",
+            reason="test double",
+        )
 
 
 class _StubSongRequestPlanner:

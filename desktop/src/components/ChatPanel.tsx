@@ -94,9 +94,9 @@ export function ChatPanel({
           <p className="text-[11px] font-semibold text-ink">ClownfishStudio</p>
         </div>
         <div className="flex gap-1 text-[8px] uppercase tracking-[0.06em] text-muted">
-          <span>{runtime?.agent.mode ?? "mock"}</span>
+          <span>{runtime?.agent.mode ?? "not_configured"}</span>
           <span>/</span>
-          <span>{runtime?.music.mode ?? "mock"}</span>
+          <span>{runtime?.music.mode ?? "not_configured"}</span>
         </div>
       </div>
 

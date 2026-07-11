@@ -1,9 +1,32 @@
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.agents import DeterministicRadioModelClient, RadioAgentRuntime
+from app.agents.song_request_agent import SongRequestPlan
 from app.main import app
+from app.services import program_generation
 from app.tools import get_program
+
+
+@pytest.fixture(autouse=True)
+def fake_program_agents(monkeypatch) -> None:
+    original_init = program_generation.ProgramGenerationService.__init__
+
+    def init_with_fakes(self, runtime=None, song_request_planner=None):  # noqa: ANN001
+        original_init(
+            self,
+            runtime=runtime
+            or RadioAgentRuntime(model_client=DeterministicRadioModelClient()),
+            song_request_planner=song_request_planner or _ProgramApiSongPlanner(),
+        )
+
+    monkeypatch.setattr(
+        program_generation.ProgramGenerationService,
+        "__init__",
+        init_with_fakes,
+    )
 
 
 def test_generate_program_endpoint_returns_radio_program() -> None:
@@ -23,7 +46,7 @@ def test_generate_program_endpoint_returns_radio_program() -> None:
 
     assert payload["request_id"].startswith("request-")
     assert payload["candidate_count"] > 0
-    assert program["context_snapshot"]["weather"]["source"] == "mock"
+    assert program["context_snapshot"]["weather"]["source"] == "disabled"
     assert playable_items
     assert all(item["candidate_id"] for item in playable_items)
     assert get_program(program["program_id"]) is not None
@@ -59,3 +82,17 @@ def make_generate_payload() -> dict[str, object]:
         },
         "max_candidates": 10,
     }
+
+
+class _ProgramApiSongPlanner:
+    def plan(self, *, message: str, memory, weather, **kwargs) -> SongRequestPlan:  # noqa: ANN001
+        del memory, weather, kwargs
+        return SongRequestPlan(
+            intent=message or "test station",
+            search_queries=["late night"],
+            preferred_title=None,
+            preferred_artist=None,
+            preferred_tags=["quiet"],
+            mode="mood_mix",
+            reason="test double",
+        )

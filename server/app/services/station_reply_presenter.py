@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 
+from app.agents import AgentOutputValidationError
 from app.schemas import ChatRouterResult, ReplyMetadata
 
 
@@ -47,15 +48,9 @@ def control_reply(
 def compact_agent_reply(text: str, fallback_message: str) -> str:
     normalized = " ".join(text.split()).strip()
     if not normalized:
-        return fallback_chat_reply(
-            message=fallback_message,
-            router=ChatRouterResult(need_chat=True),
-        )
+        raise AgentOutputValidationError("LLM chat reply was empty")
     if prefer_chinese(fallback_message) and not prefer_chinese(normalized):
-        return fallback_chat_reply(
-            message=fallback_message,
-            router=ChatRouterResult(need_chat=True),
-        )
+        raise AgentOutputValidationError("LLM chat reply language did not match the user message")
 
     first_sentence = re.split(r"(?<=[。！？.!?])\s*", normalized, maxsplit=1)[0].strip()
     if first_sentence:
@@ -67,25 +62,6 @@ def compact_agent_reply(text: str, fallback_message: str) -> str:
         return normalized
     suffix = "。" if prefers_chinese else "."
     return normalized[:limit].rstrip("，。！？,.!? ") + suffix
-
-
-def fallback_chat_reply(message: str, router: ChatRouterResult) -> str:
-    reply_kind = _router_reply_kind(router)
-    if prefer_chinese(message):
-        variants = {
-            "control": ["好。", "收到。"],
-            "info": ["我看一下这首的信息。", "好，我给你说清楚一点。"],
-            "music": ["好，我按这个方向找歌。", "这个口味我接住了。"],
-            "chat": ["我在，先陪你听着。", "嗯，我们慢慢来。"],
-        }
-    else:
-        variants = {
-            "control": ["Okay.", "Done."],
-            "info": ["I will check this track.", "Let me make that clear."],
-            "music": ["Got it, I will look that way.", "I hear the taste; next set follows."],
-            "chat": ["I am here; we can keep listening.", "Yeah, let us take it slowly."],
-        }
-    return _stable_variant(variants.get(reply_kind) or variants["chat"], f"{reply_kind}:{message}")
 
 
 def build_reply_metadata(

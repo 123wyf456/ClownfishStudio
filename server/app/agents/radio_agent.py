@@ -113,12 +113,10 @@ class ModelRequestError(ValueError):
         self.status_code = status_code
 
 
-class MockRadioModelClient:
-    """Deterministic local agent used when no model key is configured.
+class DeterministicRadioModelClient:
+    """Deterministic test double for program generation.
 
-    It still behaves like an agent boundary: tools provide facts and playable
-    candidates, then this runtime decides the program shape and narration from
-    those materials without inventing songs.
+    Production runtime does not select this client automatically.
     """
 
     def generate_program(self, agent_input: RadioAgentInput) -> dict[str, object]:
@@ -144,21 +142,16 @@ class MockRadioModelClient:
         }
 
     def generate_short_text(self, prompt: str) -> str:
-        message = _extract_latest_user_message(prompt) or _extract_prompt_field(
-            prompt,
-            "Latest user message:",
+        del prompt
+        raise ModelRequestError(
+            "A real LLM provider is required to answer chat turns."
         )
-        if "chat_reply" in prompt:
-            return _mock_chat_reply(message, _fallback_chat_router_result(message))
-        if message:
-            return _mock_chat_reply(message, _fallback_chat_router_result(message))
-        if _prefers_chinese(prompt):
-            return "你好，我是 Clownfish。先陪你播一小段。"
-        return "Hi, I'm Clownfish. I'll keep you company for a short set."
 
     def plan_chat_turn(self, prompt: str) -> ChatRouterResult:
-        message = _extract_prompt_field(prompt, "Latest user message:")
-        return _fallback_chat_router_result(message)
+        del prompt
+        raise ModelRequestError(
+            "A real LLM provider is required to understand chat turns."
+        )
 
     def _build_program_items(
         self,
@@ -1454,73 +1447,6 @@ def _shorten_text(text: str, limit: int = 80) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[:limit].rstrip("，。,. ") + "..."
-
-
-def _mock_chat_reply(message: str, router: ChatRouterResult) -> str:
-    use_chinese = _prefers_chinese(message)
-    reply_kind = _router_reply_kind(router)
-    if use_chinese:
-        variants = {
-            "control": [
-                "好。",
-                "收到。",
-                "嗯，我来处理。",
-            ],
-            "info": [
-                "我看一下这首的信息。",
-                "好，我给你说清楚一点。",
-            ],
-            "music": [
-                "好，我按这个方向找歌。",
-                "可以，这个口味我接住了。",
-                "明白，下一段往这里靠。",
-            ],
-            "chat": [
-                "我在，先陪你听着。",
-                "嗯，我们慢慢来。",
-                "好，电台先不急着换。",
-            ],
-        }
-    else:
-        variants = {
-            "control": [
-                "Okay.",
-                "Done.",
-                "Got it.",
-            ],
-            "info": [
-                "I will check this track.",
-                "Let me make that clear.",
-            ],
-            "music": [
-                "Got it, I will look in that direction.",
-                "Yes, I can lean the station that way.",
-                "I hear the taste; next set follows it.",
-            ],
-            "chat": [
-                "I am here; we can keep listening.",
-                "Yeah, let us take it slowly.",
-                "I hear you; the station can stay gentle.",
-            ],
-        }
-    return _choose_variant(variants.get(reply_kind) or variants["chat"], f"{reply_kind}:{message}")
-
-
-def _router_reply_kind(router: ChatRouterResult) -> str:
-    if router.need_control:
-        return "control"
-    if router.need_info and not router.need_music:
-        return "info"
-    if router.need_music:
-        return "music"
-    return "chat"
-
-
-def _choose_variant(values: list[str], seed: str) -> str:
-    if not values:
-        return ""
-    digest = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()
-    return values[int(digest[:8], 16) % len(values)]
 
 
 def _candidate_rotation_key(agent_input: RadioAgentInput, candidate: CandidateItem) -> int:

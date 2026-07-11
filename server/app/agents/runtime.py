@@ -6,7 +6,6 @@ from app.agents.prompts import (
 )
 from app.agents.radio_agent import (
     AnthropicRadioModelClient,
-    MockRadioModelClient,
     OpenAIResponsesRadioModelClient,
     RadioAgentInput,
     RadioModelClient,
@@ -194,9 +193,6 @@ class RadioAgentRuntime:
 
 def _build_default_model_client() -> RadioModelClient:
     settings = get_settings()
-    if settings.radio_agent_provider == "mock":
-        return MockRadioModelClient()
-
     if settings.radio_agent_provider == "anthropic":
         if not settings.anthropic_api_key:
             raise AgentOutputValidationError(

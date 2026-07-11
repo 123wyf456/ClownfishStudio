@@ -6,6 +6,7 @@ import pytest
 from app.agents import (
     AgentOutputValidationError,
     AnthropicRadioModelClient,
+    DeterministicRadioModelClient,
     OpenAIResponsesRadioModelClient,
     RadioAgentInput,
     RadioAgentRuntime,
@@ -31,7 +32,7 @@ from app.tools import (
 def test_runtime_generates_program_from_tool_candidates() -> None:
     request = make_request()
     candidate_items = search_music_candidates(limit=4) + search_podcast_candidates(limit=2)
-    runtime = RadioAgentRuntime()
+    runtime = RadioAgentRuntime(model_client=DeterministicRadioModelClient())
 
     program = runtime.generate_program(
         request=request,
@@ -56,10 +57,10 @@ def test_runtime_generates_program_from_tool_candidates() -> None:
     assert "podcast-1" not in selected_candidate_ids
 
 
-def test_mock_agent_writes_concise_narration_and_track_explanations() -> None:
+def test_deterministic_test_double_writes_concise_narration_and_track_explanations() -> None:
     request = make_request()
     candidate_items = search_music_candidates(limit=4) + search_podcast_candidates(limit=2)
-    runtime = RadioAgentRuntime()
+    runtime = RadioAgentRuntime(model_client=DeterministicRadioModelClient())
 
     program = runtime.generate_program(
         request=request,
@@ -204,8 +205,32 @@ def test_runtime_normalizes_flat_model_items_into_program_blocks() -> None:
     assert program.blocks[0].items[3].candidate_id == "podcast-1"
 
 
-def test_mock_router_outputs_chat_and_music_for_emotional_message() -> None:
-    runtime = RadioAgentRuntime()
+def test_default_runtime_requires_real_model_for_chat_routing() -> None:
+    runtime = RadioAgentRuntime(model_client=DeterministicRadioModelClient())
+
+    with pytest.raises(ValueError, match="real LLM provider"):
+        runtime.plan_chat_turn(
+            session=StationSession(
+                session_id="session-router",
+                user_id="demo-user",
+                greeting="你好，我是 Clownfish。",
+            ),
+            message="最近有点累",
+            chat_history=[],
+        )
+
+
+def test_openai_router_uses_model_output_for_emotional_message() -> None:
+    runtime = RadioAgentRuntime(
+        model_client=RouterOpenAIModelClient(
+            _router_payload(
+                emotion="tired",
+                need_chat=True,
+                need_music=True,
+                music_constraints={"energy": "low"},
+            )
+        )
+    )
 
     result = runtime.plan_chat_turn(
         session=StationSession(
@@ -224,8 +249,15 @@ def test_mock_router_outputs_chat_and_music_for_emotional_message() -> None:
     assert result.music_constraints.energy == "low"
 
 
-def test_mock_router_outputs_info_for_current_song_question() -> None:
-    runtime = RadioAgentRuntime()
+def test_openai_router_uses_model_output_for_current_song_question() -> None:
+    runtime = RadioAgentRuntime(
+        model_client=RouterOpenAIModelClient(
+            _router_payload(
+                need_chat=True,
+                need_info=True,
+            )
+        )
+    )
 
     result = runtime.plan_chat_turn(
         session=StationSession(
@@ -242,8 +274,15 @@ def test_mock_router_outputs_info_for_current_song_question() -> None:
     assert result.need_chat is True
 
 
-def test_mock_router_outputs_control_for_player_command() -> None:
-    runtime = RadioAgentRuntime()
+def test_openai_router_uses_model_output_for_player_command() -> None:
+    runtime = RadioAgentRuntime(
+        model_client=RouterOpenAIModelClient(
+            _router_payload(
+                need_control=True,
+                control_action="pause",
+            )
+        )
+    )
 
     result = runtime.plan_chat_turn(
         session=StationSession(
@@ -260,9 +299,17 @@ def test_mock_router_outputs_control_for_player_command() -> None:
     assert result.need_music is False
 
 
-def test_mock_router_extracts_artist_constraints() -> None:
-    runtime = RadioAgentRuntime()
+def test_openai_router_uses_model_output_for_artist_constraints() -> None:
     requested_artist = "示例歌手A"
+    runtime = RadioAgentRuntime(
+        model_client=RouterOpenAIModelClient(
+            _router_payload(
+                need_chat=True,
+                need_music=True,
+                music_constraints={"artists": [requested_artist]},
+            )
+        )
+    )
 
     result = runtime.plan_chat_turn(
         session=StationSession(
@@ -394,6 +441,29 @@ class FlatItemsOpenAIModelClient(OpenAIResponsesRadioModelClient):
         }
 
 
+class RouterOpenAIModelClient(OpenAIResponsesRadioModelClient):
+    def __init__(self, router_payload: dict[str, object]) -> None:
+        super().__init__(api_key="test-key", model="test-model")
+        self._router_payload = router_payload
+
+    def _post_json(
+        self,
+        path: str,
+        body: dict[str, object],
+        timeout: int | None = None,
+    ) -> dict[str, object]:
+        del path, body, timeout
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(self._router_payload),
+                    }
+                }
+            ]
+        }
+
+
 class CapturingAnthropicModelClient(AnthropicRadioModelClient):
     def __init__(self) -> None:
         super().__init__(api_key="test-key", model="claude-test")
@@ -494,4 +564,26 @@ def make_raw_program(
             }
         ],
         "total_duration_minutes": agent_input.request.user_state.duration_minutes,
+    }
+
+
+def _router_payload(
+    *,
+    emotion: str | None = None,
+    need_chat: bool = False,
+    need_music: bool = False,
+    need_info: bool = False,
+    need_control: bool = False,
+    control_action: str | None = None,
+    music_constraints: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "emotion": emotion,
+        "need_chat": need_chat,
+        "need_music": need_music,
+        "need_info": need_info,
+        "need_control": need_control,
+        "control_action": control_action,
+        "music_constraints": music_constraints or {},
+        "confidence": 0.9,
     }

@@ -85,7 +85,7 @@ class SongRequestPlanner(Protocol):
         """Return a normalized song request plan."""
 
 
-class MockSongRequestPlanner:
+class DeterministicSongRequestPlanner:
     def plan(
         self,
         *,
@@ -336,12 +336,9 @@ class AnthropicSongRequestPlanner:
 
 def build_song_request_planner() -> SongRequestPlanner:
     settings = get_settings()
-    if settings.radio_agent_provider == "mock":
-        return MockSongRequestPlanner()
-
     if settings.radio_agent_provider == "anthropic":
         if not settings.anthropic_api_key:
-            return MockSongRequestPlanner()
+            raise ValueError("RADIO_AGENT_PROVIDER=anthropic requires ANTHROPIC_API_KEY")
         return AnthropicSongRequestPlanner(
             api_key=settings.anthropic_api_key,
             model=settings.radio_agent_model,
@@ -349,7 +346,7 @@ def build_song_request_planner() -> SongRequestPlanner:
         )
 
     if not settings.openai_api_key:
-        return MockSongRequestPlanner()
+        raise ValueError("RADIO_AGENT_PROVIDER=openai requires OPENAI_API_KEY")
     return OpenAISongRequestPlanner(
         api_key=settings.openai_api_key,
         model=settings.radio_agent_model,

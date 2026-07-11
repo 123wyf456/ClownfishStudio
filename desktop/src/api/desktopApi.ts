@@ -60,7 +60,7 @@ export async function loadConfig(): Promise<ConfigResponse> {
   if (!isObject(response)) {
     return {
       config: defaultSettings,
-      runtime: mockRuntime(),
+      runtime: unconfiguredRuntime(),
     };
   }
 
@@ -120,7 +120,7 @@ export async function loadConfig(): Promise<ConfigResponse> {
 export async function saveConfig(config: ConfigResponse["config"]): Promise<ConfigResponse> {
   const response = await window.clownfishApi?.saveConfig(config);
   if (!isObject(response)) {
-    return { config, runtime: mockRuntime() };
+    return { config, runtime: unconfiguredRuntime() };
   }
 
   return loadConfigFromResponse(response, config);
@@ -227,18 +227,18 @@ function normalizeStationResponse(
   return value;
 }
 
-function mockRuntime(): ConfigResponse["runtime"] {
+function unconfiguredRuntime(): ConfigResponse["runtime"] {
   return {
     agent: { provider: "openai", configured: false, mode: "not_configured" },
     weather: { provider: "disabled", configured: false, mode: "disabled" },
-    music: { provider: "netease_cloud_music", configured: false, mode: "mock" },
-    tts: { provider: "fish_audio", configured: false, mode: "mock" },
+    music: { provider: "netease_cloud_music", configured: false, mode: "not_configured" },
+    tts: { provider: "fish_audio", configured: false, mode: "not_configured" },
   };
 }
 
 function normalizeRuntime(value: unknown): ConfigResponse["runtime"] {
   if (!isObject(value)) {
-    return mockRuntime();
+    return unconfiguredRuntime();
   }
 
   const runtime = value as Record<string, unknown>;
@@ -254,19 +254,19 @@ function normalizeRuntime(value: unknown): ConfigResponse["runtime"] {
   return {
     agent: normalizeRuntimeItem(
       agentCandidate,
-      mockRuntime().agent,
+      unconfiguredRuntime().agent,
     ),
     weather: normalizeRuntimeItem(
       weatherCandidate,
-      mockRuntime().weather,
+      unconfiguredRuntime().weather,
     ),
     music: normalizeRuntimeItem(
       musicCandidate,
-      mockRuntime().music,
+      unconfiguredRuntime().music,
     ),
     tts: normalizeRuntimeItem(
       ttsCandidate,
-      mockRuntime().tts,
+      unconfiguredRuntime().tts,
     ),
   };
 }

@@ -1,14 +1,44 @@
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.agents.song_request_agent import SongRequestPlan
 from app.core.config import get_settings
 from app.main import app
-from app.schemas import CandidateItem, ContentType, GenerateProgramResponse
+from app.schemas import (
+    CandidateItem,
+    ChatMessage,
+    ChatRouterResult,
+    ContentType,
+    GenerateProgramResponse,
+)
 from app.services import station_orchestrator, station_tts
 from app.services.session_store import get_station_session
 from app.tools import list_feedback_events, list_memory_update_hints
 from app.tools import netease_music_tool as netease_module
+
+
+@pytest.fixture(autouse=True)
+def fake_station_agents(monkeypatch) -> None:
+    original_init = station_orchestrator.StationOrchestrator.__init__
+
+    def init_with_fake_runtime(self, runtime=None):  # noqa: ANN001
+        original_init(
+            self,
+            runtime=runtime or _ApiFakeRuntime(),
+            song_request_planner=_ApiSongRequestPlanner(),
+        )
+
+    monkeypatch.setattr(
+        station_orchestrator.StationOrchestrator,
+        "__init__",
+        init_with_fake_runtime,
+    )
+    monkeypatch.setattr(
+        "app.services.program_generation.search_music_candidates",
+        _api_music_candidates,
+    )
 
 
 def test_station_generate_returns_session_payload() -> None:
@@ -21,13 +51,13 @@ def test_station_generate_returns_session_payload() -> None:
     session = payload["session"]
     assert session["session_id"].startswith("session-")
     assert session["program"]["title"]
-    assert session["calendar_events"]
+    assert session["calendar_events"] == []
     assert session["greeting"]
     assert session["playlist"]["current_index"] == 0
     assert 1 <= len(session["playlist"]["items"]) <= 8
     assert session["tts_text"] == session["greeting"]
-    assert session["tts_audio_url"].startswith("/mock-audio/")
-    assert payload["runtime"]["brain"]["provider"] == "mock"
+    assert session["tts_audio_url"] is None
+    assert payload["runtime"]["brain"]["provider"] == "openai"
 
 
 def test_station_generate_reports_netease_api_error(monkeypatch) -> None:
@@ -101,9 +131,9 @@ def test_runtime_status_reports_provider_boundaries() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["brain"]["provider"] == "mock"
-    assert payload["tts"]["provider"] == "mock"
-    assert payload["calendar"]["provider"] == "mock"
+    assert payload["brain"]["provider"] == "openai"
+    assert payload["tts"]["provider"] == "fish_audio"
+    assert payload["calendar"]["provider"] == "feishu"
 
 
 def test_station_api_allows_local_web_origin() -> None:
@@ -607,3 +637,140 @@ class _StubTtsProvider:
 
     def synthesize(self, text: str) -> tuple[str | None, str]:
         return self._audio_url, text.strip()
+
+
+class _ApiSongRequestPlanner:
+    def plan(self, *, message: str, memory, weather, **kwargs) -> SongRequestPlan:  # noqa: ANN001
+        del memory, weather, kwargs
+        return SongRequestPlan(
+            intent=message or "station",
+            search_queries=[],
+            preferred_title=None,
+            preferred_artist=None,
+            preferred_tags=["quiet"],
+            mode="mood_mix",
+            reason="test double",
+        )
+
+
+def _api_music_candidates(query=None, tags=None, limit=10):  # noqa: ANN001
+    del query, tags
+    return [
+        CandidateItem(
+            candidate_id=f"api-song-{index}",
+            content_type=ContentType.music,
+            title=f"API Song {index}",
+            creator="API Artist",
+            duration_seconds=180,
+            playback_url=f"https://example.com/api-song-{index}.mp3",
+            tags=["quiet"],
+            source="netease_cloud_music",
+        )
+        for index in range(1, min(limit, 4) + 1)
+    ]
+
+
+class _ApiFakeRuntime:
+    def generate_program(  # noqa: ANN001
+        self,
+        request,
+        weather,
+        calendar_events,
+        memory,
+        history,
+        candidate_items,
+        chat_history=None,
+    ):
+        del memory, history, chat_history
+        selected = candidate_items[: min(4, len(candidate_items))]
+        return _program_from_candidates(
+            request=request,
+            weather=weather,
+            calendar_events=calendar_events,
+            candidates=selected,
+        )
+
+    def generate_chat_reply(
+        self,
+        *,
+        session,
+        message: str,
+        chat_history: list[ChatMessage] | None = None,
+    ) -> str:
+        del session, chat_history
+        if "谁唱" in message:
+            return "这首我看一下当前播放信息。"
+        if "跳过" in message or "喜欢" in message or "收藏" in message:
+            return "已处理。"
+        return "收到，我让下一段更贴近你的意思。"
+
+    def plan_chat_turn(
+        self,
+        *,
+        session,
+        message: str,
+        chat_history: list[ChatMessage] | None = None,
+    ) -> ChatRouterResult:
+        del session, chat_history
+        if "跳过" in message:
+            return ChatRouterResult(need_control=True, control_action="skip")
+        if "喜欢" in message:
+            return ChatRouterResult(need_control=True, control_action="like")
+        if "收藏" in message:
+            return ChatRouterResult(need_control=True, control_action="favorite")
+        if "谁唱" in message:
+            return ChatRouterResult(need_chat=True, need_info=True)
+        if "更安静" in message or "regenerate" in message or "来一首" in message:
+            return ChatRouterResult(need_chat=True, need_music=True)
+        return ChatRouterResult(need_chat=True)
+
+
+def _program_from_candidates(request, weather, calendar_events, candidates):  # noqa: ANN001
+    from app.schemas import (
+        ContextSnapshot,
+        ProgramBlock,
+        ProgramItem,
+        ProgramItemType,
+        RadioProgram,
+    )
+
+    items = [
+        ProgramItem(
+            item_id="narration-1",
+            item_type=ProgramItemType.narration,
+            title="Opening",
+            position=0,
+            narration_text="晚上好，电台开始。",
+        )
+    ]
+    for index, candidate in enumerate(candidates, start=1):
+        items.append(
+            ProgramItem(
+                item_id=f"music-{index}",
+                item_type=ProgramItemType.music,
+                title=candidate.title,
+                creator=candidate.creator,
+                position=index,
+                candidate_id=candidate.candidate_id,
+            )
+        )
+    return RadioProgram(
+        program_id="api-test-program",
+        title="API Test Radio",
+        summary="A test radio program.",
+        context_snapshot=ContextSnapshot(
+            device_context=request.device_context,
+            user_state=request.user_state,
+            weather=weather,
+            calendar_events=calendar_events,
+        ),
+        blocks=[
+            ProgramBlock(
+                block_id="block-1",
+                title="Opening",
+                position=0,
+                items=items,
+            )
+        ],
+        total_duration_minutes=request.user_state.duration_minutes,
+    )

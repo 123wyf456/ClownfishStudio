@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+from app.agents import AgentOutputValidationError
+from app.agents.song_request_agent import SongRequestPlan
 from app.schemas import (
     CandidateItem,
     ChatMessage,
@@ -25,11 +27,7 @@ from app.services.station_chat_planner import (
     requires_real_music_candidates,
 )
 from app.services.station_orchestrator import StationOrchestrator
-from app.services.station_reply_presenter import (
-    build_reply_metadata,
-    compact_agent_reply,
-    control_reply,
-)
+from app.services.station_reply_presenter import build_reply_metadata, compact_agent_reply
 from app.services.station_session_mutations import (
     apply_chat_control,
     apply_refill_generation,
@@ -56,33 +54,43 @@ def test_build_router_request_text_keeps_original_message_first() -> None:
     assert text.startswith("来点中文歌")
 
 
-def test_control_reply_returns_chinese_copy_for_pause() -> None:
-    assert control_reply(action="pause", message="暂停一下", has_session=True) == "好，先暂停。"
+def test_compact_agent_reply_rejects_empty_agent_text() -> None:
+    try:
+        compact_agent_reply("", fallback_message="陪我听会儿")
+    except AgentOutputValidationError as exc:
+        assert "LLM chat reply was empty" in str(exc)
+    else:
+        raise AssertionError("empty LLM reply should not be replaced with a preset answer")
 
 
-def test_compact_agent_reply_falls_back_to_short_chinese_reply() -> None:
-    reply = compact_agent_reply(
-        "This is a very long English sentence.",
-        fallback_message="陪我听会儿",
-    )
+def test_compact_agent_reply_rejects_language_mismatch() -> None:
+    try:
+        compact_agent_reply(
+            "This is a very long English sentence.",
+            fallback_message="陪我听会儿",
+        )
+    except AgentOutputValidationError as exc:
+        assert "LLM chat reply language did not match" in str(exc)
+    else:
+        raise AssertionError("mismatched LLM reply should not be replaced with a preset answer")
 
-    assert reply in {"我在，先陪你听着。", "嗯，我们慢慢来。"}
+
+def test_fallback_chat_router_result_rejects_non_control_music_request() -> None:
+    try:
+        fallback_chat_router_result("播放一点安静的歌")
+    except AgentOutputValidationError as exc:
+        assert "non-control messages require model understanding" in str(exc)
+    else:
+        raise AssertionError("non-control music requests should be routed by the LLM")
 
 
-def test_fallback_chat_router_result_only_marks_explicit_controls_as_control() -> None:
-    router = fallback_chat_router_result("播放一点安静的歌")
+def test_fallback_chat_router_result_keeps_explicit_controls_local() -> None:
+    router = fallback_chat_router_result("跳过这首")
 
+    assert router.need_control is True
+    assert router.control_action == "skip"
+    assert router.need_chat is False
     assert router.need_music is False
-    assert router.need_chat is True
-    assert router.need_control is False
-
-
-def test_fallback_chat_router_result_keeps_non_music_chat_as_chat_only() -> None:
-    router = fallback_chat_router_result("给我讲一个笑话")
-
-    assert router.need_chat is True
-    assert router.need_music is False
-    assert router.need_control is False
 
 
 def test_requires_real_music_candidates_for_artist_request() -> None:
@@ -241,7 +249,7 @@ def test_build_reply_metadata_tracks_reply_kind_and_playlist_change() -> None:
 
 def test_chat_only_turn_uses_agent_reply_without_retuning_playlist(monkeypatch) -> None:
     runtime = _ChatOnlyRuntime()
-    orchestrator = StationOrchestrator(runtime=runtime)
+    orchestrator = StationOrchestrator(runtime=runtime, song_request_planner=_TestSongPlanner())
     initial = orchestrator.generate_station(
         GenerateProgramRequest(
             user_id="chat-only-user",
@@ -281,6 +289,41 @@ def test_chat_only_turn_uses_agent_reply_without_retuning_playlist(monkeypatch) 
     assert response.session.playlist.playlist_id == initial_playlist_id
     assert [item.candidate_id for item in response.session.playlist.items] == initial_candidate_ids
     assert runtime.chat_reply_calls == 1
+
+
+def test_chat_reply_failure_is_not_replaced_with_preset_text(monkeypatch) -> None:
+    runtime = _FailingChatRuntime()
+    orchestrator = StationOrchestrator(runtime=runtime, song_request_planner=_TestSongPlanner())
+    orchestrator.generate_station(
+        GenerateProgramRequest(
+            user_id="chat-failure-user",
+            device_context=_device_context(),
+            user_state=UserStateInput(
+                needs=[ListeningNeed.companionship],
+                duration_minutes=25,
+                free_text="先开一个电台",
+            ),
+            max_candidates=8,
+        )
+    )
+
+    def fail_generate(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("chat-only failure should not regenerate music candidates")
+
+    monkeypatch.setattr(orchestrator._generation_service, "generate", fail_generate)
+
+    try:
+        orchestrator.chat(
+            StationChatRequest(
+                user_id="chat-failure-user",
+                message="陪我聊聊",
+                device_context=_device_context(),
+            )
+        )
+    except AgentOutputValidationError as exc:
+        assert "LLM chat reply failed" in str(exc)
+    else:
+        raise AssertionError("failed LLM chat reply should not use a preset fallback")
 
 
 def _candidate(candidate_id: str) -> CandidateItem:
@@ -333,6 +376,32 @@ class _ChatOnlyRuntime:
     ) -> ChatRouterResult:
         del session, message, chat_history
         return ChatRouterResult(need_chat=True, need_music=False, confidence=0.95)
+
+
+class _TestSongPlanner:
+    def plan(self, *, message: str, memory, weather, **kwargs) -> SongRequestPlan:  # noqa: ANN001
+        del memory, weather, kwargs
+        return SongRequestPlan(
+            intent=message or "test station",
+            search_queries=["late night"],
+            preferred_title=None,
+            preferred_artist=None,
+            preferred_tags=["quiet"],
+            mode="mood_mix",
+            reason="test double",
+        )
+
+
+class _FailingChatRuntime(_ChatOnlyRuntime):
+    def generate_chat_reply(
+        self,
+        *,
+        session,
+        message: str,
+        chat_history: list[ChatMessage] | None = None,
+    ) -> str:
+        del session, message, chat_history
+        raise RuntimeError("LLM unavailable")
 
 
 def _sample_program() -> RadioProgram:

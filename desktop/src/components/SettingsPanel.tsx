@@ -79,7 +79,7 @@ export function SettingsPanel({
           </section>
 
           <section className="hardware-panel grid gap-2 rounded-[16px] border border-line/70 p-3">
-            <SectionHeader label="Agent" state={runtime?.agent.mode ?? "mock"} />
+            <SectionHeader label="Agent" state={runtime?.agent.mode ?? "not_configured"} />
             <label className="settings-label">
               Provider
               <select
@@ -117,7 +117,7 @@ export function SettingsPanel({
           </section>
 
           <section className="hardware-panel grid gap-2 rounded-[16px] border border-line/70 p-3">
-            <SectionHeader label="NetEase Cloud Music" state={runtime?.music.mode ?? "mock"} />
+            <SectionHeader label="NetEase Cloud Music" state={runtime?.music.mode ?? "not_configured"} />
             <Field label="API Base URL" value={draft.neteaseApiBaseUrl} onChange={(neteaseApiBaseUrl) => setDraft((value) => ({ ...value, neteaseApiBaseUrl }))} />
             <Field label="Playback Level" value={draft.neteasePlaybackLevel} onChange={(neteasePlaybackLevel) => setDraft((value) => ({ ...value, neteasePlaybackLevel }))} />
             <label className="settings-label">

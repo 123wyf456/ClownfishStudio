@@ -27,9 +27,7 @@ from app.services.session_store import (
 from app.services.station_events import append_session_event
 from app.services.station_feedback import record_feedback_for_control
 from app.services.station_reply_presenter import (
-    compact_agent_reply,
     control_reply,
-    fallback_chat_reply,
 )
 
 
@@ -127,10 +125,6 @@ def retune_session_playlist(
 
     updated_session = session.model_copy(
         update={
-            "greeting": compact_agent_reply(
-                fallback_chat_reply(message=message, router=router),
-                fallback_message=message,
-            ),
             "playlist": playlist,
             "warnings": [
                 *session.warnings,

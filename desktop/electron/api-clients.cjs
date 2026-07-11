@@ -95,7 +95,7 @@ function createDesktopApi({ app, runtimeRoot, writeLog }) {
       fish_audio_api_key: payload.fishAudioApiKey,
       fish_audio_base_url: payload.fishAudioBaseUrl,
       fish_audio_voice_id: payload.fishAudioVoiceId,
-      calendar_provider: "mock",
+      calendar_provider: "feishu",
       feishu_app_id: "",
       feishu_app_secret: "",
       feishu_calendar_id: "",
@@ -379,7 +379,7 @@ async function normalizeStationResponse(payload, localConfig, musicDir) {
       weather: weather?.condition || "...",
       agentLine: assistantText,
       ttsAudioUrl: resolveServerAssetUrl(localConfig.serverBaseUrl, session?.tts_audio_url || ""),
-      tracks: tracks.length > 0 ? tracks : fallbackTracks(),
+      tracks,
       currentTrackIndex: currentIndex,
       chatReply: payload?.reply?.text || "",
       greeting: session?.greeting || "",
@@ -408,18 +408,18 @@ async function normalizeStationResponse(payload, localConfig, musicDir) {
 function mapRuntime(runtime) {
   if (!runtime || typeof runtime !== "object") {
     return {
-      agent: { provider: "mock", configured: true, mode: "mock" },
+      agent: { provider: "openai", configured: false, mode: "not_configured" },
       weather: { provider: "disabled", configured: false, mode: "disabled" },
-      music: { provider: "mock", configured: false, mode: "mock" },
-      tts: { provider: "mock", configured: false, mode: "mock" },
+      music: { provider: "netease_cloud_music", configured: false, mode: "not_configured" },
+      tts: { provider: "fish_audio", configured: false, mode: "not_configured" },
     };
   }
 
   return {
-    agent: runtime.brain || { provider: "mock", configured: true, mode: "mock" },
+    agent: runtime.brain || { provider: "openai", configured: false, mode: "not_configured" },
     weather: runtime.weather || { provider: "disabled", configured: false, mode: "disabled" },
-    music: runtime.music || { provider: "mock", configured: false, mode: "mock" },
-    tts: runtime.tts || { provider: "mock", configured: false, mode: "mock" },
+    music: runtime.music || { provider: "netease_cloud_music", configured: false, mode: "not_configured" },
+    tts: runtime.tts || { provider: "fish_audio", configured: false, mode: "not_configured" },
   };
 }
 
@@ -675,20 +675,6 @@ function requestBinaryWithElectronNet(url, options = {}) {
     }
     request.end();
   });
-}
-
-function fallbackTracks() {
-  return [
-    {
-      id: "loading-1",
-      candidateId: "loading-1",
-      title: "...",
-      artist: "...",
-      duration: 180,
-      playbackUrl: "",
-      source: "fallback",
-    },
-  ];
 }
 
 function windowlessTimeout(callback, ms) {

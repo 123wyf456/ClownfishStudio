@@ -4,7 +4,8 @@ import logging
 from threading import Lock
 from time import monotonic
 
-from app.agents import RadioAgentRuntime
+from app.agents import AgentOutputValidationError, RadioAgentRuntime
+from app.agents.song_request_agent import SongRequestPlanner
 from app.schemas import (
     ChatMessage,
     ChatRouterResult,
@@ -50,7 +51,6 @@ from app.services.station_reply_presenter import (
     build_reply_metadata,
     compact_agent_reply,
     control_reply,
-    fallback_chat_reply,
 )
 from app.services.station_session_mutations import (
     apply_chat_control,
@@ -75,9 +75,13 @@ class StationOrchestrator:
     def __init__(
         self,
         runtime: RadioAgentRuntime | None = None,
+        song_request_planner: SongRequestPlanner | None = None,
     ) -> None:
         self._runtime = runtime or RadioAgentRuntime()
-        self._generation_service = ProgramGenerationService(runtime=self._runtime)
+        self._generation_service = ProgramGenerationService(
+            runtime=self._runtime,
+            song_request_planner=song_request_planner,
+        )
 
     def generate_station(self, request: GenerateProgramRequest) -> StationGenerateResponse:
         with _generation_lock_for_user(request.user_id):
@@ -205,12 +209,10 @@ class StationOrchestrator:
                     fallback_message=request.message,
                 )
             else:
-                reply_text = self._generate_dj_reply_with_fallback(
+                reply_text = self._generate_dj_reply(
                     session=session_response.session,
                     message=request.message,
                     chat_history=chat_history,
-                    router=router,
-                    fallback=session_response.session.greeting,
                 )
             timings["agent_chat_reply"] = monotonic() - step_started_at
 
@@ -362,12 +364,10 @@ class StationOrchestrator:
 
         if not router.need_music:
             step_started_at = monotonic()
-            reply_text = self._generate_dj_reply_with_fallback(
+            reply_text = self._generate_dj_reply(
                 session=seed_session,
                 message=request.message,
                 chat_history=chat_history,
-                router=router,
-                fallback=fallback_chat_reply(message=request.message, router=router),
             )
             timings["agent_chat_reply"] = monotonic() - step_started_at
 
@@ -472,12 +472,10 @@ class StationOrchestrator:
         timings["retune_playlist"] = monotonic() - step_started_at
 
         step_started_at = monotonic()
-        reply_text = self._generate_dj_reply_with_fallback(
+        reply_text = self._generate_dj_reply(
             session=updated_session,
             message=request.message,
             chat_history=chat_history,
-            router=router,
-            fallback=fallback_chat_reply(message=request.message, router=router),
         )
         timings["agent_chat_reply"] = monotonic() - step_started_at
 
@@ -791,14 +789,12 @@ class StationOrchestrator:
             )
             return fallback_chat_router_result(message)
 
-    def _generate_dj_reply_with_fallback(
+    def _generate_dj_reply(
         self,
         *,
         session: StationSession,
         message: str,
         chat_history: list[ChatMessage],
-        router: ChatRouterResult,
-        fallback: str,
     ) -> str:
         try:
             reply = self._runtime.generate_chat_reply(
@@ -812,7 +808,7 @@ class StationOrchestrator:
                 session.user_id,
                 exc,
             )
-            reply = fallback or fallback_chat_reply(message=message, router=router)
+            raise AgentOutputValidationError(f"LLM chat reply failed: {exc}") from exc
         return compact_agent_reply(reply, fallback_message=message)
 
     def _apply_chat_control(

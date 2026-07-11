@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -17,7 +16,6 @@ from app.schemas import (
     RuntimeStatus,
 )
 from app.tools.netease_music_tool import get_netease_music_health, is_netease_music_enabled
-from app.tools.weather_tool import get_weather as get_mock_weather
 
 AUDIO_OUTPUT_DIR = RUNTIME_ROOT / "generated_audio"
 
@@ -58,41 +56,15 @@ class DisabledWeatherProvider:
         return dict(WEATHER_DISABLED_SNAPSHOT)
 
 
-class MockWeatherProvider:
-    def get_weather(
-        self,
-        device_context: DeviceContext | str | None,
-    ) -> dict[str, str | int | float | bool | None]:
-        return get_mock_weather(device_context)
-
-
-class MockCalendarProvider:
+class DisabledCalendarProvider:
     def get_events(self, user_id: str) -> list[CalendarEvent]:
-        base_time = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
-        return [
-            CalendarEvent(
-                event_id=f"mock-calendar-{user_id}-1",
-                title="Morning planning block",
-                start_at=base_time + timedelta(hours=8),
-                end_at=base_time + timedelta(hours=9),
-                location="Home office",
-                source="mock",
-            ),
-            CalendarEvent(
-                event_id=f"mock-calendar-{user_id}-2",
-                title="Evening reset walk",
-                start_at=base_time + timedelta(hours=18),
-                end_at=base_time + timedelta(hours=19),
-                location="Neighborhood",
-                source="mock",
-            ),
-        ]
+        del user_id
+        return []
 
 
-class MockTtsProvider:
+class DisabledTtsProvider:
     def synthesize(self, text: str) -> tuple[str | None, str]:
-        synthesized_id = uuid4().hex
-        return (f"/mock-audio/{synthesized_id}.mp3", text.strip())
+        return (None, text.strip())
 
 
 class OpenWeatherProvider:
@@ -214,12 +186,9 @@ def build_runtime_status(settings: Settings | None = None) -> RuntimeStatus:
     tts_provider = active_settings.tts_provider
     calendar_provider = active_settings.calendar_provider
     weather_provider = active_settings.weather_provider
-    weather_configured = (
-        weather_provider == "mock"
-        or (
-            weather_provider == "openweather"
-            and bool(active_settings.openweather_api_key)
-        )
+    weather_configured = weather_provider == "disabled" or (
+        weather_provider == "openweather"
+        and bool(active_settings.openweather_api_key)
     )
 
     return RuntimeStatus(
@@ -227,26 +196,26 @@ def build_runtime_status(settings: Settings | None = None) -> RuntimeStatus:
         brain=IntegrationStatus(
             provider=brain_provider,
             configured=brain_configured,
-            mode="live" if brain_configured and brain_provider != "mock" else "mock",
+            mode="live" if brain_configured else "not_configured",
             detail=active_settings.radio_agent_model,
         ),
         tts=IntegrationStatus(
             provider=tts_provider,
-            configured=tts_provider == "mock" or bool(active_settings.fish_audio_api_key),
+            configured=tts_provider == "fish_audio" and bool(active_settings.fish_audio_api_key),
             mode="live"
             if tts_provider == "fish_audio" and active_settings.fish_audio_api_key
-            else "mock",
+            else "not_configured",
             detail=active_settings.fish_audio_voice_id or "",
         ),
         calendar=IntegrationStatus(
             provider=calendar_provider,
-            configured=calendar_provider == "mock"
-            or bool(active_settings.feishu_app_id and active_settings.feishu_app_secret),
+            configured=calendar_provider == "feishu"
+            and bool(active_settings.feishu_app_id and active_settings.feishu_app_secret),
             mode="live"
             if calendar_provider == "feishu"
             and active_settings.feishu_app_id
             and active_settings.feishu_app_secret
-            else "mock",
+            else "not_configured",
             detail=active_settings.feishu_calendar_id or "",
         ),
         weather=IntegrationStatus(
@@ -266,7 +235,7 @@ def build_runtime_status(settings: Settings | None = None) -> RuntimeStatus:
         music=IntegrationStatus(
             provider="netease_cloud_music",
             configured=is_netease_music_enabled(),
-            mode="live" if is_netease_music_enabled() else "mock",
+            mode="live" if is_netease_music_enabled() else "not_configured",
             detail=active_settings.netease_api_base_url or "",
         ),
     )
@@ -281,26 +250,22 @@ def build_weather_provider(settings: Settings | None = None) -> WeatherProvider:
     active_settings = settings or get_settings()
     if active_settings.weather_provider == "openweather" and active_settings.openweather_api_key:
         return OpenWeatherProvider(active_settings)
-    if active_settings.weather_provider == "mock":
-        return MockWeatherProvider()
     return DisabledWeatherProvider()
 
 
 def build_calendar_provider(settings: Settings | None = None) -> CalendarProvider:
     del settings
-    return MockCalendarProvider()
+    return DisabledCalendarProvider()
 
 
 def build_tts_provider(settings: Settings | None = None) -> TtsProvider:
     active_settings = settings or get_settings()
     if active_settings.tts_provider == "fish_audio" and active_settings.fish_audio_api_key:
         return FishAudioTtsProvider(active_settings)
-    return MockTtsProvider()
+    return DisabledTtsProvider()
 
 
 def _is_brain_configured(settings: Settings) -> bool:
-    if settings.radio_agent_provider == "mock":
-        return True
     if settings.radio_agent_provider == "anthropic":
         return bool(settings.anthropic_api_key)
     return bool(settings.openai_api_key)

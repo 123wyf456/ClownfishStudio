@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from app.agents import AgentOutputValidationError
 from app.schemas import ChatRouterResult
 
 
 def fallback_chat_router_result(message: str) -> ChatRouterResult:
     text = message.strip().lower()
     if not text:
-        return ChatRouterResult(emotion="neutral", need_chat=True, confidence=0.4)
+        raise AgentOutputValidationError("LLM chat router failed and the user message is empty")
 
     control_action = _detect_control_action(text)
     if control_action is not None:
@@ -17,7 +18,9 @@ def fallback_chat_router_result(message: str) -> ChatRouterResult:
             confidence=0.85,
         )
 
-    return ChatRouterResult(emotion="neutral", need_chat=True, confidence=0.55)
+    raise AgentOutputValidationError(
+        "LLM chat router failed; non-control messages require model understanding"
+    )
 
 
 def build_router_request_text(message: str, router: ChatRouterResult) -> str:

@@ -25,7 +25,7 @@ def agent_status() -> dict[str, str | bool]:
         "uses_model": active_mode in {"openai", "anthropic"},
         "configuration_issue": (
             "model API key is missing"
-            if settings.radio_agent_provider != "mock" and not runtime.brain.configured
+            if not runtime.brain.configured
             else ""
         ),
     }

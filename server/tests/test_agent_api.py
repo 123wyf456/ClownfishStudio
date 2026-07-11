@@ -10,10 +10,10 @@ def test_agent_status_endpoint_returns_runtime_configuration() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["provider"] == "mock"
-    assert payload["active_mode"] == "mock"
+    assert payload["provider"] == "openai"
+    assert payload["active_mode"] == "openai"
     assert payload["model"]
-    assert payload["openai_configured"] is False
+    assert payload["openai_configured"] is True
 
 
 def test_music_status_endpoint_returns_netease_health_payload() -> None:
